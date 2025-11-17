@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { StyleSheet, Text, View, TouchableOpacity, SafeAreaView, FlatList, TextInput, Modal } from 'react-native';
+import { StyleSheet, Text, View, TouchableOpacity, SafeAreaView, ScrollView, Share } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { colors, spacing } from './theme';
@@ -8,119 +8,175 @@ import { initializeAds, showInterstitialAd } from './services/adsManager';
 
 const STORAGE_KEY = '@Random_Prompt_Generator_data';
 
-interface Item {
-  id: string;
-  text: string;
-  completed: boolean;
-  createdAt: string;
-}
+type Category = 'writing' | 'art' | 'creative';
+
+const PROMPTS: Record<Category, string[]> = {
+  writing: [
+    'Write about a character who discovers they can read minds, but only when people are lying.',
+    'A time traveler accidentally prevents their own birth. What happens next?',
+    'Describe a world where emotions are visible as colored auras around people.',
+    'Write a story that begins with: "The last person on Earth sat alone in a room. There was a knock on the door."',
+    'A detective must solve a crime that hasn\'t happened yet.',
+    'Write from the perspective of a house that has witnessed generations of families.',
+    'Two strangers wake up handcuffed together with no memory of how they got there.',
+    'A love letter written by someone who speaks only in metaphors.',
+    'The main character receives a message from their future self. It says only: "Don\'t trust them."',
+    'Write about a society where lying is physically impossible.',
+  ],
+  art: [
+    'Create a landscape where gravity works sideways.',
+    'Design a creature that lives in the clouds and feeds on lightning.',
+    'Illustrate the concept of "nostalgia" without using any recognizable objects.',
+    'Draw a portrait using only geometric shapes and three colors.',
+    'Create an underwater city inhabited by beings made of light.',
+    'Design a map of an imaginary country where emotions determine geography.',
+    'Illustrate what music would look like if it were a physical substance.',
+    'Create a scene showing the moment between sleeping and waking.',
+    'Design architectural structures inspired by natural disasters.',
+    'Illustrate a garden where flowers bloom with memories instead of petals.',
+  ],
+  creative: [
+    'Invent a new color and describe what it represents.',
+    'Create a recipe for cooking time itself.',
+    'Design a language spoken entirely through dance.',
+    'Imagine a sport played in zero gravity using only thought.',
+    'Invent a musical instrument that plays emotions instead of notes.',
+    'Create a holiday celebrated by a civilization living underground.',
+    'Design a currency based on forgotten memories.',
+    'Invent a form of transportation powered by dreams.',
+    'Create a board game where the rules change every turn.',
+    'Imagine a library where books write themselves based on reader emotions.',
+  ],
+};
 
 export default function App() {
-  const [items, setItems] = useState<Item[]>([]);
-  const [input, setInput] = useState('');
-  const [showModal, setShowModal] = useState(false);
+  const [category, setCategory] = useState<Category>('writing');
+  const [currentPrompt, setCurrentPrompt] = useState<string>('');
+  const [favorites, setFavorites] = useState<string[]>([]);
   const [count, setCount] = useState(0);
 
   useEffect(() => {
     initializeAds();
     loadData();
+    generatePrompt();
   }, []);
 
   const loadData = async () => {
     try {
       const saved = await AsyncStorage.getItem(STORAGE_KEY);
-      if (saved) setItems(JSON.parse(saved));
+      if (saved) setFavorites(JSON.parse(saved));
     } catch (error) {
       console.error('Load error:', error);
     }
   };
 
-  const saveData = async (data: Item[]) => {
+  const saveData = async (data: string[]) => {
     try {
       await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-      setItems(data);
+      setFavorites(data);
     } catch (error) {
       console.error('Save error:', error);
     }
   };
 
-  const addItem = () => {
-    if (!input.trim()) return;
-    const newItem: Item = {
-      id: Date.now().toString(),
-      text: input,
-      completed: false,
-      createdAt: new Date().toISOString(),
-    };
-    saveData([newItem, ...items]);
-    setInput('');
-    setShowModal(false);
+  const generatePrompt = (cat: Category = category) => {
+    const prompts = PROMPTS[cat];
+    const random = prompts[Math.floor(Math.random() * prompts.length)];
+    setCurrentPrompt(random);
     const newCount = count + 1;
     setCount(newCount);
-    if (newCount % 5 === 0) showInterstitialAd();
+    if (newCount % 10 === 0) showInterstitialAd();
   };
 
-  const toggleItem = (id: string) => {
-    saveData(items.map(i => i.id === id ? { ...i, completed: !i.completed } : i));
+  const toggleFavorite = () => {
+    if (!currentPrompt) return;
+    if (favorites.includes(currentPrompt)) {
+      saveData(favorites.filter((f) => f !== currentPrompt));
+    } else {
+      saveData([...favorites, currentPrompt]);
+    }
   };
 
-  const deleteItem = (id: string) => {
-    saveData(items.filter(i => i.id !== id));
+  const sharePrompt = async () => {
+    try {
+      await Share.share({ message: currentPrompt });
+    } catch (error) {
+      console.log('Share error:', error);
+    }
   };
 
-  const completed = items.filter(i => i.completed).length;
+  const changeCategory = (cat: Category) => {
+    setCategory(cat);
+    generatePrompt(cat);
+  };
 
   return (
     <SafeAreaView style={styles.container}>
       <StatusBar style="dark" />
       <View style={styles.header}>
-        <Text style={styles.title}>Random Prompt Generator</Text>
-        <Text style={styles.count}>{completed}/{items.length}</Text>
+        <Text style={styles.title}>Prompt Generator</Text>
+        <Text style={styles.favCount}>⭐ {favorites.length}</Text>
       </View>
-      <FlatList
-        data={items}
-        keyExtractor={i => i.id}
-        contentContainerStyle={styles.list}
-        ListEmptyComponent={<Text style={styles.empty}>No items yet</Text>}
-        renderItem={({ item }) => (
+
+      <View style={styles.tabs}>
+        {(['writing', 'art', 'creative'] as Category[]).map((cat) => (
           <TouchableOpacity
-            style={styles.item}
-            onPress={() => toggleItem(item.id)}
-            onLongPress={() => deleteItem(item.id)}
+            key={cat}
+            style={[styles.tab, category === cat && styles.tabActive]}
+            onPress={() => changeCategory(cat)}
           >
-            <View style={[styles.check, item.completed && styles.checkActive]}>
-              {item.completed && <Text style={styles.checkmark}>✓</Text>}
-            </View>
-            <Text style={[styles.itemText, item.completed && styles.itemDone]}>{item.text}</Text>
+            <Text style={[styles.tabText, category === cat && styles.tabTextActive]}>
+              {cat.charAt(0).toUpperCase() + cat.slice(1)}
+            </Text>
           </TouchableOpacity>
-        )}
-      />
-      <TouchableOpacity style={styles.fab} onPress={() => setShowModal(true)}>
-        <Text style={styles.fabText}>+</Text>
-      </TouchableOpacity>
-      <AdBanner />
-      <Modal visible={showModal} animationType="slide" transparent>
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Add New</Text>
-            <TextInput
-              style={styles.input}
-              value={input}
-              onChangeText={setInput}
-              placeholder="Enter text..."
-              autoFocus
-            />
-            <View style={styles.buttons}>
-              <TouchableOpacity style={[styles.btn, styles.btnCancel]} onPress={() => setShowModal(false)}>
-                <Text style={styles.btnTextCancel}>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={[styles.btn, styles.btnAdd]} onPress={addItem}>
-                <Text style={styles.btnText}>Add</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
+        ))}
+      </View>
+
+      <ScrollView style={styles.content} contentContainerStyle={styles.contentInner}>
+        <View style={styles.promptCard}>
+          <Text style={styles.promptText}>{currentPrompt || 'Tap "Generate" to start'}</Text>
         </View>
-      </Modal>
+
+        <TouchableOpacity style={styles.btnGenerate} onPress={() => generatePrompt()}>
+          <Text style={styles.btnGenerateText}>🎲 Generate Random</Text>
+        </TouchableOpacity>
+
+        <View style={styles.actions}>
+          <TouchableOpacity
+            style={[styles.actionBtn, favorites.includes(currentPrompt) && styles.actionBtnFav]}
+            onPress={toggleFavorite}
+          >
+            <Text style={styles.actionBtnText}>
+              {favorites.includes(currentPrompt) ? '⭐ Favorited' : '☆ Favorite'}
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.actionBtn} onPress={sharePrompt}>
+            <Text style={styles.actionBtnText}>📤 Share</Text>
+          </TouchableOpacity>
+        </View>
+
+        {favorites.length > 0 && (
+          <View style={styles.favoritesSection}>
+            <Text style={styles.sectionTitle}>Your Favorites</Text>
+            {favorites.map((fav, idx) => (
+              <TouchableOpacity
+                key={idx}
+                style={styles.favoriteCard}
+                onPress={() => setCurrentPrompt(fav)}
+              >
+                <Text style={styles.favoriteText} numberOfLines={2}>
+                  {fav}
+                </Text>
+                <TouchableOpacity onPress={() => saveData(favorites.filter((f) => f !== fav))}>
+                  <Text style={styles.deleteBtn}>✕</Text>
+                </TouchableOpacity>
+              </TouchableOpacity>
+            ))}
+          </View>
+        )}
+      </ScrollView>
+
+      <AdBanner />
     </SafeAreaView>
   );
 }
@@ -128,26 +184,56 @@ export default function App() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.background },
   header: { flexDirection: 'row', justifyContent: 'space-between', padding: spacing.lg, alignItems: 'center' },
-  title: { fontSize: 24, fontWeight: 'bold', color: colors.primary },
-  count: { fontSize: 16, color: colors.gray.dark },
-  list: { paddingHorizontal: spacing.lg, paddingBottom: 100 },
-  empty: { textAlign: 'center', marginTop: spacing.xl, color: colors.gray.medium, fontSize: 16 },
-  item: { backgroundColor: colors.white, borderRadius: 12, padding: spacing.lg, marginBottom: spacing.sm, flexDirection: 'row', alignItems: 'center' },
-  check: { width: 24, height: 24, borderRadius: 12, borderWidth: 2, borderColor: colors.gray.medium, marginRight: spacing.md, justifyContent: 'center', alignItems: 'center' },
-  checkActive: { backgroundColor: colors.status.success, borderColor: colors.status.success },
-  checkmark: { color: colors.white, fontSize: 14, fontWeight: 'bold' },
-  itemText: { flex: 1, fontSize: 16, color: colors.text },
-  itemDone: { textDecorationLine: 'line-through', color: colors.gray.medium },
-  fab: { position: 'absolute', right: spacing.lg, bottom: 80, width: 56, height: 56, borderRadius: 28, backgroundColor: colors.primary, justifyContent: 'center', alignItems: 'center', elevation: 8 },
-  fabText: { color: colors.white, fontSize: 32 },
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
-  modalContent: { backgroundColor: colors.white, borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: spacing.xl },
-  modalTitle: { fontSize: 20, fontWeight: 'bold', color: colors.primary, marginBottom: spacing.lg },
-  input: { backgroundColor: colors.gray.light, padding: spacing.md, borderRadius: 12, fontSize: 16, marginBottom: spacing.lg },
-  buttons: { flexDirection: 'row', gap: spacing.md },
-  btn: { flex: 1, padding: spacing.lg, borderRadius: 12, alignItems: 'center' },
-  btnCancel: { backgroundColor: colors.gray.light },
-  btnAdd: { backgroundColor: colors.primary },
-  btnText: { color: colors.white, fontSize: 16, fontWeight: 'bold' },
-  btnTextCancel: { color: colors.text, fontSize: 16, fontWeight: '600' },
+  title: { fontSize: 28, fontWeight: 'bold', color: colors.primary },
+  favCount: { fontSize: 18, color: colors.text },
+  tabs: { flexDirection: 'row', paddingHorizontal: spacing.lg, gap: spacing.sm, marginBottom: spacing.md },
+  tab: { flex: 1, paddingVertical: spacing.md, borderRadius: 20, backgroundColor: colors.gray.light, alignItems: 'center' },
+  tabActive: { backgroundColor: colors.primary },
+  tabText: { fontSize: 14, fontWeight: '600', color: colors.text },
+  tabTextActive: { color: colors.white },
+  content: { flex: 1 },
+  contentInner: { paddingHorizontal: spacing.lg, paddingBottom: 100 },
+  promptCard: {
+    backgroundColor: colors.white,
+    borderRadius: 16,
+    padding: spacing.xl,
+    marginBottom: spacing.xl,
+    minHeight: 200,
+    justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+    elevation: 5,
+  },
+  promptText: { fontSize: 18, color: colors.text, lineHeight: 28, textAlign: 'center' },
+  btnGenerate: {
+    backgroundColor: colors.primary,
+    paddingVertical: spacing.lg,
+    borderRadius: 12,
+    alignItems: 'center',
+    marginBottom: spacing.md,
+  },
+  btnGenerateText: { color: colors.white, fontSize: 18, fontWeight: 'bold' },
+  actions: { flexDirection: 'row', gap: spacing.sm, marginBottom: spacing.xl },
+  actionBtn: { flex: 1, backgroundColor: colors.gray.light, paddingVertical: spacing.md, borderRadius: 12, alignItems: 'center' },
+  actionBtnFav: { backgroundColor: colors.status.warning },
+  actionBtnText: { color: colors.text, fontSize: 14, fontWeight: '600' },
+  favoritesSection: { marginTop: spacing.xl },
+  sectionTitle: { fontSize: 20, fontWeight: 'bold', color: colors.text, marginBottom: spacing.md },
+  favoriteCard: {
+    backgroundColor: colors.white,
+    borderRadius: 12,
+    padding: spacing.md,
+    marginBottom: spacing.sm,
+    flexDirection: 'row',
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  favoriteText: { flex: 1, fontSize: 14, color: colors.text, marginRight: spacing.md },
+  deleteBtn: { fontSize: 20, color: colors.status.error, padding: spacing.sm },
 });

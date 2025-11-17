@@ -1,5 +1,15 @@
-import React, { useState, useEffect } from 'react';
-import { StyleSheet, Text, View, TouchableOpacity, SafeAreaView, FlatList, TextInput, Modal } from 'react-native';
+import React, { useState, useEffect, useRef } from 'react';
+import {
+  StyleSheet,
+  Text,
+  View,
+  TouchableOpacity,
+  SafeAreaView,
+  Modal,
+  TextInput,
+  ScrollView,
+  Alert,
+} from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { colors, spacing } from './theme';
@@ -7,117 +17,325 @@ import { AdBanner } from './components/AdBanner';
 import { initializeAds, showInterstitialAd } from './services/adsManager';
 
 const STORAGE_KEY = '@Productivity_Focus_Timer_data';
+const STATS_KEY = '@Productivity_Focus_Timer_stats';
 
-interface Item {
-  id: string;
-  text: string;
-  completed: boolean;
-  createdAt: string;
+type SessionType = 'work' | 'break';
+type TimerStatus = 'stopped' | 'running' | 'paused';
+
+interface Settings {
+  workDuration: number; // minutes
+  breakDuration: number; // minutes
+  autoStart: boolean;
+  sessionsGoal: number;
+}
+
+interface Stats {
+  sessionsToday: number;
+  totalMinutesToday: number;
+  lastSessionDate: string;
 }
 
 export default function App() {
-  const [items, setItems] = useState<Item[]>([]);
-  const [input, setInput] = useState('');
-  const [showModal, setShowModal] = useState(false);
-  const [count, setCount] = useState(0);
+  const [settings, setSettings] = useState<Settings>({
+    workDuration: 25,
+    breakDuration: 5,
+    autoStart: false,
+    sessionsGoal: 8,
+  });
+  const [stats, setStats] = useState<Stats>({
+    sessionsToday: 0,
+    totalMinutesToday: 0,
+    lastSessionDate: new Date().toDateString(),
+  });
+
+  const [sessionType, setSessionType] = useState<SessionType>('work');
+  const [remaining, setRemaining] = useState(settings.workDuration * 60);
+  const [status, setStatus] = useState<TimerStatus>('stopped');
+  const [currentSession, setCurrentSession] = useState(0);
+  const [showSettings, setShowSettings] = useState(false);
+  const intervalRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
     initializeAds();
     loadData();
+    return () => {
+      if (intervalRef.current) clearInterval(intervalRef.current);
+    };
   }, []);
 
   const loadData = async () => {
     try {
-      const saved = await AsyncStorage.getItem(STORAGE_KEY);
-      if (saved) setItems(JSON.parse(saved));
+      const savedSettings = await AsyncStorage.getItem(STORAGE_KEY);
+      const savedStats = await AsyncStorage.getItem(STATS_KEY);
+
+      if (savedSettings) {
+        const loaded = JSON.parse(savedSettings);
+        setSettings(loaded);
+        setRemaining(loaded.workDuration * 60);
+      }
+
+      if (savedStats) {
+        const loadedStats: Stats = JSON.parse(savedStats);
+        const today = new Date().toDateString();
+        if (loadedStats.lastSessionDate === today) {
+          setStats(loadedStats);
+        } else {
+          const newStats: Stats = {
+            sessionsToday: 0,
+            totalMinutesToday: 0,
+            lastSessionDate: today,
+          };
+          setStats(newStats);
+          await AsyncStorage.setItem(STATS_KEY, JSON.stringify(newStats));
+        }
+      }
     } catch (error) {
       console.error('Load error:', error);
     }
   };
 
-  const saveData = async (data: Item[]) => {
+  const saveSettings = async (newSettings: Settings) => {
     try {
-      await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-      setItems(data);
+      await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(newSettings));
+      setSettings(newSettings);
     } catch (error) {
-      console.error('Save error:', error);
+      console.error('Save settings error:', error);
     }
   };
 
-  const addItem = () => {
-    if (!input.trim()) return;
-    const newItem: Item = {
-      id: Date.now().toString(),
-      text: input,
-      completed: false,
-      createdAt: new Date().toISOString(),
-    };
-    saveData([newItem, ...items]);
-    setInput('');
-    setShowModal(false);
-    const newCount = count + 1;
-    setCount(newCount);
-    if (newCount % 5 === 0) showInterstitialAd();
+  const saveStats = async (newStats: Stats) => {
+    try {
+      await AsyncStorage.setItem(STATS_KEY, JSON.stringify(newStats));
+      setStats(newStats);
+    } catch (error) {
+      console.error('Save stats error:', error);
+    }
   };
 
-  const toggleItem = (id: string) => {
-    saveData(items.map(i => i.id === id ? { ...i, completed: !i.completed } : i));
+  const startTimer = () => {
+    if (status === 'stopped' && sessionType === 'work') {
+      setCurrentSession(currentSession + 1);
+    }
+    setStatus('running');
+
+    intervalRef.current = setInterval(() => {
+      setRemaining((prev) => {
+        if (prev <= 1) {
+          handleTimerComplete();
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
   };
 
-  const deleteItem = (id: string) => {
-    saveData(items.filter(i => i.id !== id));
+  const pauseTimer = () => {
+    if (intervalRef.current) {
+      clearInterval(intervalRef.current);
+      intervalRef.current = null;
+    }
+    setStatus('paused');
   };
 
-  const completed = items.filter(i => i.completed).length;
+  const resetTimer = () => {
+    if (intervalRef.current) {
+      clearInterval(intervalRef.current);
+      intervalRef.current = null;
+    }
+    setStatus('stopped');
+    const duration = sessionType === 'work' ? settings.workDuration : settings.breakDuration;
+    setRemaining(duration * 60);
+    if (sessionType === 'work') setCurrentSession(0);
+  };
+
+  const handleTimerComplete = () => {
+    if (intervalRef.current) {
+      clearInterval(intervalRef.current);
+      intervalRef.current = null;
+    }
+
+    const duration = sessionType === 'work' ? settings.workDuration : settings.breakDuration;
+
+    if (sessionType === 'work') {
+      // Update stats
+      const newStats: Stats = {
+        ...stats,
+        sessionsToday: stats.sessionsToday + 1,
+        totalMinutesToday: stats.totalMinutesToday + duration,
+        lastSessionDate: new Date().toDateString(),
+      };
+      saveStats(newStats);
+
+      Alert.alert('Work Session Complete!', 'Time for a break!');
+      setSessionType('break');
+      setRemaining(settings.breakDuration * 60);
+    } else {
+      Alert.alert('Break Complete!', 'Ready for another session?');
+      setSessionType('work');
+      setRemaining(settings.workDuration * 60);
+    }
+
+    if (settings.autoStart) {
+      setStatus('running');
+      startTimer();
+    } else {
+      setStatus('stopped');
+    }
+  };
+
+  const formatTime = (seconds: number): string => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+  };
+
+  const getProgress = (): number => {
+    const total = sessionType === 'work' ? settings.workDuration * 60 : settings.breakDuration * 60;
+    return (remaining / total) * 100;
+  };
 
   return (
     <SafeAreaView style={styles.container}>
       <StatusBar style="dark" />
+
       <View style={styles.header}>
-        <Text style={styles.title}>Productivity Focus Timer</Text>
-        <Text style={styles.count}>{completed}/{items.length}</Text>
+        <Text style={styles.title}>Focus Timer</Text>
+        <TouchableOpacity onPress={() => setShowSettings(true)}>
+          <Text style={styles.settingsIcon}>⚙️</Text>
+        </TouchableOpacity>
       </View>
-      <FlatList
-        data={items}
-        keyExtractor={i => i.id}
-        contentContainerStyle={styles.list}
-        ListEmptyComponent={<Text style={styles.empty}>No items yet</Text>}
-        renderItem={({ item }) => (
-          <TouchableOpacity
-            style={styles.item}
-            onPress={() => toggleItem(item.id)}
-            onLongPress={() => deleteItem(item.id)}
-          >
-            <View style={[styles.check, item.completed && styles.checkActive]}>
-              {item.completed && <Text style={styles.checkmark}>✓</Text>}
-            </View>
-            <Text style={[styles.itemText, item.completed && styles.itemDone]}>{item.text}</Text>
+
+      <View style={styles.content}>
+        {/* Session Info */}
+        <View style={styles.sessionInfo}>
+          <Text style={styles.sessionType}>
+            {sessionType === 'work' ? '💼 Work Session' : '☕ Break Time'}
+          </Text>
+          <Text style={styles.sessionCount}>
+            Session {currentSession} of {settings.sessionsGoal}
+          </Text>
+        </View>
+
+        {/* Timer Display */}
+        <View style={styles.timerCircle}>
+          <View
+            style={[
+              styles.progressRing,
+              {
+                background: `conic-gradient(${colors.primary} ${getProgress()}%, ${colors.gray.light} ${getProgress()}%)`,
+              },
+            ]}
+          />
+          <View style={styles.timerInner}>
+            <Text style={[styles.timeDisplay, { color: sessionType === 'work' ? colors.primary : colors.status.success }]}>
+              {formatTime(remaining)}
+            </Text>
+            <Text style={styles.sessionLabel}>
+              {sessionType === 'work' ? 'Focus Time' : 'Break Time'}
+            </Text>
+          </View>
+        </View>
+
+        {/* Controls */}
+        <View style={styles.controls}>
+          {status === 'stopped' && (
+            <TouchableOpacity style={[styles.btn, styles.btnStart]} onPress={startTimer}>
+              <Text style={styles.btnText}>▶ Start</Text>
+            </TouchableOpacity>
+          )}
+          {status === 'running' && (
+            <TouchableOpacity style={[styles.btn, styles.btnPause]} onPress={pauseTimer}>
+              <Text style={styles.btnText}>⏸ Pause</Text>
+            </TouchableOpacity>
+          )}
+          {status === 'paused' && (
+            <TouchableOpacity style={[styles.btn, styles.btnResume]} onPress={startTimer}>
+              <Text style={styles.btnText}>▶ Resume</Text>
+            </TouchableOpacity>
+          )}
+          <TouchableOpacity style={[styles.btn, styles.btnReset]} onPress={resetTimer}>
+            <Text style={[styles.btnText, styles.btnResetText]}>↻ Reset</Text>
           </TouchableOpacity>
-        )}
-      />
-      <TouchableOpacity style={styles.fab} onPress={() => setShowModal(true)}>
-        <Text style={styles.fabText}>+</Text>
-      </TouchableOpacity>
+        </View>
+
+        {/* Stats */}
+        <View style={styles.stats}>
+          <View style={styles.statCard}>
+            <Text style={styles.statValue}>{stats.sessionsToday}</Text>
+            <Text style={styles.statLabel}>Sessions Today</Text>
+          </View>
+          <View style={styles.statCard}>
+            <Text style={styles.statValue}>{stats.totalMinutesToday}</Text>
+            <Text style={styles.statLabel}>Minutes Today</Text>
+          </View>
+        </View>
+      </View>
+
       <AdBanner />
-      <Modal visible={showModal} animationType="slide" transparent>
+
+      {/* Settings Modal */}
+      <Modal visible={showSettings} animationType="slide" transparent>
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Add New</Text>
-            <TextInput
-              style={styles.input}
-              value={input}
-              onChangeText={setInput}
-              placeholder="Enter text..."
-              autoFocus
-            />
-            <View style={styles.buttons}>
-              <TouchableOpacity style={[styles.btn, styles.btnCancel]} onPress={() => setShowModal(false)}>
-                <Text style={styles.btnTextCancel}>Cancel</Text>
+            <Text style={styles.modalTitle}>Settings</Text>
+
+            <ScrollView>
+              <Text style={styles.label}>Work Duration (minutes)</Text>
+              <TextInput
+                style={styles.input}
+                value={settings.workDuration.toString()}
+                onChangeText={(text) => {
+                  const val = parseInt(text) || 25;
+                  saveSettings({ ...settings, workDuration: val });
+                  if (sessionType === 'work' && status === 'stopped') {
+                    setRemaining(val * 60);
+                  }
+                }}
+                keyboardType="numeric"
+              />
+
+              <Text style={styles.label}>Break Duration (minutes)</Text>
+              <TextInput
+                style={styles.input}
+                value={settings.breakDuration.toString()}
+                onChangeText={(text) => {
+                  const val = parseInt(text) || 5;
+                  saveSettings({ ...settings, breakDuration: val });
+                  if (sessionType === 'break' && status === 'stopped') {
+                    setRemaining(val * 60);
+                  }
+                }}
+                keyboardType="numeric"
+              />
+
+              <Text style={styles.label}>Sessions Goal</Text>
+              <TextInput
+                style={styles.input}
+                value={settings.sessionsGoal.toString()}
+                onChangeText={(text) => {
+                  const val = parseInt(text) || 8;
+                  saveSettings({ ...settings, sessionsGoal: val });
+                }}
+                keyboardType="numeric"
+              />
+
+              <TouchableOpacity
+                style={styles.checkboxRow}
+                onPress={() => saveSettings({ ...settings, autoStart: !settings.autoStart })}
+              >
+                <View style={[styles.checkbox, settings.autoStart && styles.checkboxChecked]}>
+                  {settings.autoStart && <Text style={styles.checkmark}>✓</Text>}
+                </View>
+                <Text style={styles.checkboxLabel}>Auto-start next session</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={[styles.btn, styles.btnAdd]} onPress={addItem}>
-                <Text style={styles.btnText}>Add</Text>
-              </TouchableOpacity>
-            </View>
+            </ScrollView>
+
+            <TouchableOpacity
+              style={[styles.btn, styles.btnClose]}
+              onPress={() => setShowSettings(false)}
+            >
+              <Text style={styles.btnText}>Close</Text>
+            </TouchableOpacity>
           </View>
         </View>
       </Modal>
@@ -127,27 +345,106 @@ export default function App() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.background },
-  header: { flexDirection: 'row', justifyContent: 'space-between', padding: spacing.lg, alignItems: 'center' },
-  title: { fontSize: 24, fontWeight: 'bold', color: colors.primary },
-  count: { fontSize: 16, color: colors.gray.dark },
-  list: { paddingHorizontal: spacing.lg, paddingBottom: 100 },
-  empty: { textAlign: 'center', marginTop: spacing.xl, color: colors.gray.medium, fontSize: 16 },
-  item: { backgroundColor: colors.white, borderRadius: 12, padding: spacing.lg, marginBottom: spacing.sm, flexDirection: 'row', alignItems: 'center' },
-  check: { width: 24, height: 24, borderRadius: 12, borderWidth: 2, borderColor: colors.gray.medium, marginRight: spacing.md, justifyContent: 'center', alignItems: 'center' },
-  checkActive: { backgroundColor: colors.status.success, borderColor: colors.status.success },
-  checkmark: { color: colors.white, fontSize: 14, fontWeight: 'bold' },
-  itemText: { flex: 1, fontSize: 16, color: colors.text },
-  itemDone: { textDecorationLine: 'line-through', color: colors.gray.medium },
-  fab: { position: 'absolute', right: spacing.lg, bottom: 80, width: 56, height: 56, borderRadius: 28, backgroundColor: colors.primary, justifyContent: 'center', alignItems: 'center', elevation: 8 },
-  fabText: { color: colors.white, fontSize: 32 },
+  header: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    padding: spacing.lg,
+    alignItems: 'center',
+  },
+  title: { fontSize: 28, fontWeight: 'bold', color: colors.primary },
+  settingsIcon: { fontSize: 28, padding: spacing.sm },
+  content: { flex: 1, alignItems: 'center', paddingTop: spacing.xl },
+  sessionInfo: { alignItems: 'center', marginBottom: spacing.xl },
+  sessionType: { fontSize: 24, fontWeight: 'bold', color: colors.text, marginBottom: spacing.sm },
+  sessionCount: { fontSize: 14, color: colors.gray.dark },
+  timerCircle: {
+    width: 280,
+    height: 280,
+    borderRadius: 140,
+    backgroundColor: colors.gray.light,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: spacing.xl,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+    elevation: 5,
+  },
+  progressRing: {
+    position: 'absolute',
+    width: 280,
+    height: 280,
+    borderRadius: 140,
+  },
+  timerInner: {
+    width: 240,
+    height: 240,
+    borderRadius: 120,
+    backgroundColor: colors.white,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  timeDisplay: { fontSize: 64, fontWeight: 'bold', fontVariant: ['tabular-nums'] },
+  sessionLabel: { fontSize: 16, color: colors.gray.dark, marginTop: spacing.sm },
+  controls: { flexDirection: 'row', gap: spacing.md, marginBottom: spacing.xl, paddingHorizontal: spacing.xl },
+  btn: {
+    flex: 1,
+    paddingVertical: spacing.lg,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  btnStart: { backgroundColor: colors.status.success },
+  btnPause: { backgroundColor: colors.status.warning },
+  btnResume: { backgroundColor: colors.status.success },
+  btnReset: { backgroundColor: colors.gray.light },
+  btnClose: { backgroundColor: colors.primary, marginTop: spacing.lg },
+  btnText: { color: colors.white, fontSize: 18, fontWeight: 'bold' },
+  btnResetText: { color: colors.text },
+  stats: { flexDirection: 'row', gap: spacing.md, paddingHorizontal: spacing.xl },
+  statCard: {
+    flex: 1,
+    backgroundColor: colors.white,
+    borderRadius: 12,
+    padding: spacing.lg,
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  statValue: { fontSize: 32, fontWeight: 'bold', color: colors.primary },
+  statLabel: { fontSize: 12, color: colors.gray.dark, marginTop: spacing.xs, textAlign: 'center' },
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
-  modalContent: { backgroundColor: colors.white, borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: spacing.xl },
-  modalTitle: { fontSize: 20, fontWeight: 'bold', color: colors.primary, marginBottom: spacing.lg },
-  input: { backgroundColor: colors.gray.light, padding: spacing.md, borderRadius: 12, fontSize: 16, marginBottom: spacing.lg },
-  buttons: { flexDirection: 'row', gap: spacing.md },
-  btn: { flex: 1, padding: spacing.lg, borderRadius: 12, alignItems: 'center' },
-  btnCancel: { backgroundColor: colors.gray.light },
-  btnAdd: { backgroundColor: colors.primary },
-  btnText: { color: colors.white, fontSize: 16, fontWeight: 'bold' },
-  btnTextCancel: { color: colors.text, fontSize: 16, fontWeight: '600' },
+  modalContent: {
+    backgroundColor: colors.white,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    padding: spacing.xl,
+    maxHeight: '80%',
+  },
+  modalTitle: { fontSize: 24, fontWeight: 'bold', color: colors.primary, marginBottom: spacing.lg },
+  label: { fontSize: 14, fontWeight: '600', color: colors.gray.dark, marginBottom: spacing.sm, marginTop: spacing.md },
+  input: {
+    backgroundColor: colors.gray.light,
+    padding: spacing.md,
+    borderRadius: 12,
+    fontSize: 16,
+  },
+  checkboxRow: { flexDirection: 'row', alignItems: 'center', marginTop: spacing.lg },
+  checkbox: {
+    width: 24,
+    height: 24,
+    borderRadius: 6,
+    borderWidth: 2,
+    borderColor: colors.gray.medium,
+    marginRight: spacing.md,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  checkboxChecked: { backgroundColor: colors.primary, borderColor: colors.primary },
+  checkmark: { color: colors.white, fontSize: 16, fontWeight: 'bold' },
+  checkboxLabel: { fontSize: 16, color: colors.text },
 });
