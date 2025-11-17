@@ -1,0 +1,14 @@
+{
+  "name": "@100-apps/admob-shared",
+  "version": "1.0.0",
+  "description": "Shared AdMob module for all 100 apps",
+  "main": "admobConfig.ts",
+  "types": "admobConfig.ts",
+  "author": "100-Apps Factory Team",
+  "license": "MIT",
+  "peerDependencies": {
+    "expo-ads-admob": "^13.0.0",
+    "react": "^18.0.0",
+    "react-native": "^0.70.0"
+  }
+}
