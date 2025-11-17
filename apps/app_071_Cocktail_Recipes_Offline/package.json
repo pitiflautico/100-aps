@@ -1,7 +1,7 @@
 {
-  "name": "app_071_cocktail_recipes_offline",
+  "name": "cocktail-recipes-offline",
   "version": "1.0.0",
-  "main": "index.ts",
+  "main": "expo/AppEntry.js",
   "scripts": {
     "start": "expo start",
     "android": "expo start --android",
@@ -10,12 +10,16 @@
   },
   "dependencies": {
     "expo": "~54.0.23",
-    "expo-status-bar": "~3.0.8",
-    "react": "19.1.0",
-    "react-native": "0.81.5"
+    "expo-status-bar": "~2.0.0",
+    "react": "18.3.1",
+    "react-native": "0.81.5",
+    "@react-native-async-storage/async-storage": "^2.2.0",
+    "react-native-google-mobile-ads": "^14.3.0"
   },
   "devDependencies": {
-    "@types/react": "~19.1.0",
+    "@babel/core": "^7.25.2",
+    "@types/react": "~18.3.12",
+    "@types/react-native": "~0.81.0",
     "typescript": "~5.9.2"
   },
   "private": true
