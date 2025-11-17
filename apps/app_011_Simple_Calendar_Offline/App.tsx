@@ -1,44 +1,153 @@
-import React, { useState } from 'react';
-import { StyleSheet, Text, View, SafeAreaView, TouchableOpacity } from 'react-native';
+import React, { useState, useEffect } from 'react';
+import { StyleSheet, Text, View, TouchableOpacity, SafeAreaView, FlatList, TextInput, Modal } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { colors, spacing } from './theme';
+import { AdBanner } from './components/AdBanner';
+import { initializeAds, showInterstitialAd } from './services/adsManager';
+
+const STORAGE_KEY = '@Simple_Calendar_Offline_data';
+
+interface Item {
+  id: string;
+  text: string;
+  completed: boolean;
+  createdAt: string;
+}
 
 export default function App() {
-  const [currentMonth] = useState(new Date().getMonth());
-  const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-  const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-  const [selected, setSelected] = useState(new Date().getDate());
+  const [items, setItems] = useState<Item[]>([]);
+  const [input, setInput] = useState('');
+  const [showModal, setShowModal] = useState(false);
+  const [count, setCount] = useState(0);
+
+  useEffect(() => {
+    initializeAds();
+    loadData();
+  }, []);
+
+  const loadData = async () => {
+    try {
+      const saved = await AsyncStorage.getItem(STORAGE_KEY);
+      if (saved) setItems(JSON.parse(saved));
+    } catch (error) {
+      console.error('Load error:', error);
+    }
+  };
+
+  const saveData = async (data: Item[]) => {
+    try {
+      await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+      setItems(data);
+    } catch (error) {
+      console.error('Save error:', error);
+    }
+  };
+
+  const addItem = () => {
+    if (!input.trim()) return;
+    const newItem: Item = {
+      id: Date.now().toString(),
+      text: input,
+      completed: false,
+      createdAt: new Date().toISOString(),
+    };
+    saveData([newItem, ...items]);
+    setInput('');
+    setShowModal(false);
+    const newCount = count + 1;
+    setCount(newCount);
+    if (newCount % 5 === 0) showInterstitialAd();
+  };
+
+  const toggleItem = (id: string) => {
+    saveData(items.map(i => i.id === id ? { ...i, completed: !i.completed } : i));
+  };
+
+  const deleteItem = (id: string) => {
+    saveData(items.filter(i => i.id !== id));
+  };
+
+  const completed = items.filter(i => i.completed).length;
 
   return (
     <SafeAreaView style={styles.container}>
       <StatusBar style="dark" />
-      <Text style={styles.title}>Calendar - {monthNames[currentMonth]}</Text>
-      <View style={styles.daysRow}>
-        {days.map(d => <Text key={d} style={styles.dayName}>{d}</Text>)}
+      <View style={styles.header}>
+        <Text style={styles.title}>Simple Calendar Offline</Text>
+        <Text style={styles.count}>{completed}/{items.length}</Text>
       </View>
-      <View style={styles.grid}>
-        {Array.from({ length: 30 }).map((_, i) => (
+      <FlatList
+        data={items}
+        keyExtractor={i => i.id}
+        contentContainerStyle={styles.list}
+        ListEmptyComponent={<Text style={styles.empty}>No items yet</Text>}
+        renderItem={({ item }) => (
           <TouchableOpacity
-            key={i}
-            style={[styles.day, selected === i + 1 && styles.daySelected]}
-            onPress={() => setSelected(i + 1)}
+            style={styles.item}
+            onPress={() => toggleItem(item.id)}
+            onLongPress={() => deleteItem(item.id)}
           >
-            <Text style={[styles.dayText, selected === i + 1 && styles.dayTextSelected]}>{i + 1}</Text>
+            <View style={[styles.check, item.completed && styles.checkActive]}>
+              {item.completed && <Text style={styles.checkmark}>✓</Text>}
+            </View>
+            <Text style={[styles.itemText, item.completed && styles.itemDone]}>{item.text}</Text>
           </TouchableOpacity>
-        ))}
-      </View>
+        )}
+      />
+      <TouchableOpacity style={styles.fab} onPress={() => setShowModal(true)}>
+        <Text style={styles.fabText}>+</Text>
+      </TouchableOpacity>
+      <AdBanner />
+      <Modal visible={showModal} animationType="slide" transparent>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Add New</Text>
+            <TextInput
+              style={styles.input}
+              value={input}
+              onChangeText={setInput}
+              placeholder="Enter text..."
+              autoFocus
+            />
+            <View style={styles.buttons}>
+              <TouchableOpacity style={[styles.btn, styles.btnCancel]} onPress={() => setShowModal(false)}>
+                <Text style={styles.btnTextCancel}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[styles.btn, styles.btnAdd]} onPress={addItem}>
+                <Text style={styles.btnText}>Add</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: colors.background, padding: spacing.lg },
-  title: { fontSize: 24, fontWeight: 'bold', color: colors.primary, marginBottom: spacing.lg },
-  daysRow: { flexDirection: 'row', justifyContent: 'space-around', marginBottom: spacing.md },
-  dayName: { fontSize: 12, color: colors.gray.dark, width: 40, textAlign: 'center' },
-  grid: { flexDirection: 'row', flexWrap: 'wrap' },
-  day: { width: '14%', aspectRatio: 1, justifyContent: 'center', alignItems: 'center', marginBottom: spacing.xs },
-  daySelected: { backgroundColor: colors.primary, borderRadius: 20 },
-  dayText: { fontSize: 16, color: colors.text },
-  dayTextSelected: { color: colors.white, fontWeight: 'bold' },
+  container: { flex: 1, backgroundColor: colors.background },
+  header: { flexDirection: 'row', justifyContent: 'space-between', padding: spacing.lg, alignItems: 'center' },
+  title: { fontSize: 24, fontWeight: 'bold', color: colors.primary },
+  count: { fontSize: 16, color: colors.gray.dark },
+  list: { paddingHorizontal: spacing.lg, paddingBottom: 100 },
+  empty: { textAlign: 'center', marginTop: spacing.xl, color: colors.gray.medium, fontSize: 16 },
+  item: { backgroundColor: colors.white, borderRadius: 12, padding: spacing.lg, marginBottom: spacing.sm, flexDirection: 'row', alignItems: 'center' },
+  check: { width: 24, height: 24, borderRadius: 12, borderWidth: 2, borderColor: colors.gray.medium, marginRight: spacing.md, justifyContent: 'center', alignItems: 'center' },
+  checkActive: { backgroundColor: colors.status.success, borderColor: colors.status.success },
+  checkmark: { color: colors.white, fontSize: 14, fontWeight: 'bold' },
+  itemText: { flex: 1, fontSize: 16, color: colors.text },
+  itemDone: { textDecorationLine: 'line-through', color: colors.gray.medium },
+  fab: { position: 'absolute', right: spacing.lg, bottom: 80, width: 56, height: 56, borderRadius: 28, backgroundColor: colors.primary, justifyContent: 'center', alignItems: 'center', elevation: 8 },
+  fabText: { color: colors.white, fontSize: 32 },
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
+  modalContent: { backgroundColor: colors.white, borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: spacing.xl },
+  modalTitle: { fontSize: 20, fontWeight: 'bold', color: colors.primary, marginBottom: spacing.lg },
+  input: { backgroundColor: colors.gray.light, padding: spacing.md, borderRadius: 12, fontSize: 16, marginBottom: spacing.lg },
+  buttons: { flexDirection: 'row', gap: spacing.md },
+  btn: { flex: 1, padding: spacing.lg, borderRadius: 12, alignItems: 'center' },
+  btnCancel: { backgroundColor: colors.gray.light },
+  btnAdd: { backgroundColor: colors.primary },
+  btnText: { color: colors.white, fontSize: 16, fontWeight: 'bold' },
+  btnTextCancel: { color: colors.text, fontSize: 16, fontWeight: '600' },
 });

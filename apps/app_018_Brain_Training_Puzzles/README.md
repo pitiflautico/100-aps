@@ -1,5 +1,18 @@
 # Brain Training Puzzles
 
-> Brain training
+> Offline app with full features
 
-**Version**: 1.0.0
+## Features
+
+- ✅ Add/Edit/Delete items
+- 💾 AsyncStorage persistence
+- 💰 AdMob (Banner + Interstitial)
+- 📱 Fully offline
+
+## Tech
+
+- React Native 0.81.5
+- AsyncStorage ^2.2.0  
+- AdMob v14.3.0
+
+**Status**: ✅ Functional
