@@ -12,10 +12,8 @@ import { MetronomeDisplay } from './components/MetronomeDisplay';
 import { PlayButton } from './components/PlayButton';
 import { TimeSignatureSelector } from './components/TimeSignatureSelector';
 import { colors, spacing } from './theme';
-
-// AdMob imports (commented out for now since expo-ads-admob setup is needed)
-// import { AdBanner } from '../../shared/admob/AdBanner';
-// import { InterstitialAdManager } from '../../shared/admob/AdInterstitial';
+import { AdBanner } from './components/AdBanner';
+import { AdsManager } from './services/adsManager';
 
 export default function App() {
   const {
@@ -32,11 +30,12 @@ export default function App() {
 
   // Initialize AdMob on app start
   useEffect(() => {
-    // InterstitialAdManager.init();
-    // Show interstitial ad after 3 seconds
-    // setTimeout(() => {
-    //   InterstitialAdManager.showAdWithDelay(3000);
-    // }, 3000);
+    // Show interstitial ad after app has been used for a bit
+    const timer = setTimeout(() => {
+      AdsManager.showInterstitialAd();
+    }, 30000); // Show after 30 seconds
+
+    return () => clearTimeout(timer);
   }, []);
 
   return (
@@ -89,8 +88,8 @@ export default function App() {
         </View>
       </ScrollView>
 
-      {/* AdMob Banner (uncomment when AdMob is configured) */}
-      {/* <AdBanner /> */}
+      {/* AdMob Banner */}
+      <AdBanner />
     </SafeAreaView>
   );
 }

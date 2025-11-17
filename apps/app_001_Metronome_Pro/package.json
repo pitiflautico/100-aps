@@ -12,11 +12,12 @@
     "@react-navigation/native": "^7.1.20",
     "@react-navigation/stack": "^7.6.4",
     "expo": "~54.0.23",
-    "expo-ads-admob": "^13.0.0",
     "expo-av": "^16.0.7",
+    "expo-dev-client": "~4.0.29",
     "expo-status-bar": "~3.0.8",
     "react": "19.1.0",
-    "react-native": "0.81.5"
+    "react-native": "0.81.5",
+    "react-native-google-mobile-ads": "^14.3.0"
   },
   "devDependencies": {
     "@types/react": "~19.1.0",

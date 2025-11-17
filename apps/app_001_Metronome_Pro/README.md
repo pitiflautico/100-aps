@@ -92,11 +92,12 @@
 
 ### Ad Module Location
 
-All advertising code is in the **shared AdMob module**:
-- Location: `/shared/admob/`
-- Configuration: `admobConfig.ts`
-- Banner Component: `AdBanner.tsx`
-- Interstitial Manager: `AdInterstitial.tsx`
+All advertising code uses **react-native-google-mobile-ads**:
+- Library: `react-native-google-mobile-ads` v14.3.0
+- Location: `/services/adsManager.ts`
+- Banner Component: `/components/AdBanner.tsx`
+- Test IDs: Uses Google's TestIds in development
+- Production: Configure real Ad Unit IDs in adsManager.ts
 
 ### AdMob IDs
 

@@ -65,19 +65,18 @@ export const useMetronome = (): UseMetronomeReturn => {
           shouldDuckAndroid: true,
         });
 
-        // For now, we'll use system sounds
-        // In production, you'd load actual click sound files
-        // const { sound } = await Audio.Sound.createAsync(
-        //   require('../assets/sounds/click.mp3')
-        // );
-        // const { sound: accentSound } = await Audio.Sound.createAsync(
-        //   require('../assets/sounds/accent.mp3')
-        // );
+        // Load click sound files
+        const { sound } = await Audio.Sound.createAsync(
+          require('../assets/sounds/click.wav')
+        );
+        const { sound: accentSound } = await Audio.Sound.createAsync(
+          require('../assets/sounds/accent.wav')
+        );
 
-        // if (isMounted) {
-        //   soundRef.current = sound;
-        //   accentSoundRef.current = accentSound;
-        // }
+        if (isMounted) {
+          soundRef.current = sound;
+          accentSoundRef.current = accentSound;
+        }
       } catch (error) {
         console.error('Error initializing audio:', error);
       }
@@ -102,15 +101,10 @@ export const useMetronome = (): UseMetronomeReturn => {
    */
   const playClick = async (isAccent: boolean = false) => {
     try {
-      // For now, just console log
-      // In production, play actual sounds
-      // const sound = isAccent ? accentSoundRef.current : soundRef.current;
-      // if (sound) {
-      //   await sound.replayAsync();
-      // }
-
-      // Placeholder - in real app, this would play audio
-      // console.log(isAccent ? 'ACCENT' : 'click');
+      const sound = isAccent ? accentSoundRef.current : soundRef.current;
+      if (sound) {
+        await sound.replayAsync();
+      }
     } catch (error) {
       console.error('Error playing click:', error);
     }
