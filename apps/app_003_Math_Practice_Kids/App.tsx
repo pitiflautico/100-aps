@@ -2,6 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { StyleSheet, Text, View, TouchableOpacity, SafeAreaView } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { colors, spacing } from './theme';
+import { AdBanner } from './components/AdBanner';
+import { AdsManager } from './services/adsManager';
 
 type Operation = '+' | '-' | '×' | '÷';
 
@@ -48,6 +50,16 @@ export default function App() {
   useEffect(() => {
     generateProblem();
   }, []);
+
+  // Show interstitial ad every 10 problems
+  useEffect(() => {
+    if (total > 0 && total % 10 === 0) {
+      const timer = setTimeout(() => {
+        AdsManager.showInterstitialAd();
+      }, 2000);
+      return () => clearTimeout(timer);
+    }
+  }, [total]);
 
   const getCorrectAnswer = () => {
     switch (operation) {
@@ -124,6 +136,7 @@ export default function App() {
           </TouchableOpacity>
         ))}
       </View>
+      <AdBanner />
     </SafeAreaView>
   );
 }

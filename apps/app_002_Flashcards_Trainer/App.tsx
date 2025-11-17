@@ -1,16 +1,32 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { StyleSheet, Text, View, FlatList, TouchableOpacity, SafeAreaView } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { useFlashcards } from './hooks/useFlashcards';
 import { FlashcardView } from './components/FlashcardView';
 import { colors, spacing } from './theme';
 import { Deck } from './types';
+import { AdBanner } from './components/AdBanner';
+import { AdsManager } from './services/adsManager';
 
 export default function App() {
-  const { decks, getCardsForDeck, loading } = useFlashcards();
+  const { decks, getCardsForDeck, getDeckProgress, saveSessionProgress, loading } = useFlashcards();
   const [selectedDeck, setSelectedDeck] = useState<Deck | null>(null);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [score, setScore] = useState({ correct: 0, incorrect: 0 });
+
+  // Save progress and show ad when completing a deck
+  useEffect(() => {
+    if (selectedDeck && currentIndex >= getCardsForDeck(selectedDeck.id).length && currentIndex > 0) {
+      // Save session progress
+      saveSessionProgress(selectedDeck.id, score.correct, score.incorrect);
+
+      // Show interstitial ad
+      const timer = setTimeout(() => {
+        AdsManager.showInterstitialAd();
+      }, 2000);
+      return () => clearTimeout(timer);
+    }
+  }, [currentIndex, selectedDeck]);
 
   if (loading) {
     return (
@@ -43,6 +59,7 @@ export default function App() {
               <Text style={styles.buttonText}>Back to Decks</Text>
             </TouchableOpacity>
           </View>
+          <AdBanner />
         </SafeAreaView>
       );
     }
@@ -79,18 +96,27 @@ export default function App() {
       <FlatList
         data={decks}
         keyExtractor={item => item.id}
-        renderItem={({ item }) => (
-          <TouchableOpacity
-            style={[styles.deckCard, { borderLeftColor: item.color }]}
-            onPress={() => setSelectedDeck(item)}
-          >
-            <Text style={styles.deckName}>{item.name}</Text>
-            <Text style={styles.deckDescription}>{item.description}</Text>
-            <Text style={styles.cardCount}>{item.cardCount} cards</Text>
-          </TouchableOpacity>
-        )}
+        renderItem={({ item }) => {
+          const deckProgress = getDeckProgress(item.id);
+          return (
+            <TouchableOpacity
+              style={[styles.deckCard, { borderLeftColor: item.color }]}
+              onPress={() => setSelectedDeck(item)}
+            >
+              <Text style={styles.deckName}>{item.name}</Text>
+              <Text style={styles.deckDescription}>{item.description}</Text>
+              <Text style={styles.cardCount}>{item.cardCount} cards</Text>
+              {deckProgress && (
+                <Text style={styles.progressText}>
+                  Sessions: {deckProgress.totalSessions} | Accuracy: {Math.round((deckProgress.totalCorrect / (deckProgress.totalCorrect + deckProgress.totalIncorrect)) * 100)}%
+                </Text>
+              )}
+            </TouchableOpacity>
+          );
+        }}
         contentContainerStyle={styles.list}
       />
+      <AdBanner />
     </SafeAreaView>
   );
 }
@@ -117,6 +143,7 @@ const styles = StyleSheet.create({
   deckName: { fontSize: 20, fontWeight: 'bold', color: colors.text, marginBottom: spacing.xs },
   deckDescription: { fontSize: 14, color: colors.gray.dark, marginBottom: spacing.sm },
   cardCount: { fontSize: 12, color: colors.primary, fontWeight: '600' },
+  progressText: { fontSize: 11, color: colors.gray.medium, marginTop: spacing.xs },
   resultContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: spacing.xl },
   scoreText: { fontSize: 18, color: colors.text, marginVertical: spacing.sm },
   button: { backgroundColor: colors.primary, padding: spacing.lg, borderRadius: 12, marginTop: spacing.xl },

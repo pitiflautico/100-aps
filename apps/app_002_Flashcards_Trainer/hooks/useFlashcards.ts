@@ -1,7 +1,10 @@
 import { useState, useEffect } from 'react';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Card, Deck } from '../types';
 
-// Sample flashcard data
+const STORAGE_KEY = '@flashcards_progress';
+
+// Pre-loaded deck data
 const DECKS: Deck[] = [
   {
     id: 'spanish-basics',
@@ -63,25 +66,70 @@ const CARDS: Record<string, Card[]> = {
   ],
 };
 
+interface Progress {
+  [deckId: string]: {
+    totalSessions: number;
+    totalCorrect: number;
+    totalIncorrect: number;
+    lastStudied: string;
+  };
+}
+
 export const useFlashcards = () => {
   const [decks, setDecks] = useState<Deck[]>([]);
   const [loading, setLoading] = useState(true);
+  const [progress, setProgress] = useState<Progress>({});
 
   useEffect(() => {
-    // Simulate loading data
-    setTimeout(() => {
+    loadProgress();
+  }, []);
+
+  const loadProgress = async () => {
+    try {
+      const stored = await AsyncStorage.getItem(STORAGE_KEY);
+      if (stored) {
+        setProgress(JSON.parse(stored));
+      }
       setDecks(DECKS);
       setLoading(false);
-    }, 500);
-  }, []);
+    } catch (error) {
+      console.error('Error loading progress:', error);
+      setDecks(DECKS);
+      setLoading(false);
+    }
+  };
+
+  const saveSessionProgress = async (deckId: string, correct: number, incorrect: number) => {
+    try {
+      const newProgress = {
+        ...progress,
+        [deckId]: {
+          totalSessions: (progress[deckId]?.totalSessions || 0) + 1,
+          totalCorrect: (progress[deckId]?.totalCorrect || 0) + correct,
+          totalIncorrect: (progress[deckId]?.totalIncorrect || 0) + incorrect,
+          lastStudied: new Date().toISOString(),
+        },
+      };
+      await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(newProgress));
+      setProgress(newProgress);
+    } catch (error) {
+      console.error('Error saving progress:', error);
+    }
+  };
 
   const getCardsForDeck = (deckId: string): Card[] => {
     return CARDS[deckId] || [];
   };
 
+  const getDeckProgress = (deckId: string) => {
+    return progress[deckId];
+  };
+
   return {
     decks,
     getCardsForDeck,
+    getDeckProgress,
+    saveSessionProgress,
     loading,
   };
 };
