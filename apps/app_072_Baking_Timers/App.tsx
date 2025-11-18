@@ -1,125 +1,460 @@
-import React, { useState, useEffect } from 'react';
-import { StyleSheet, Text, View, TouchableOpacity, SafeAreaView, FlatList, TextInput, Modal } from 'react-native';
+import React, { useState, useEffect, useRef } from 'react';
+import {
+  StyleSheet, Text, View, TouchableOpacity, SafeAreaView, FlatList, TextInput,
+  Modal, ScrollView, Alert,
+} from 'react-native';
 import { StatusBar } from 'expo-status-bar';
+import { Audio } from 'expo-av';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { colors, spacing } from './theme';
 import { AdBanner } from './components/AdBanner';
 import { initializeAds, showInterstitialAd } from './services/adsManager';
 
-const STORAGE_KEY = '@Baking_Timers_data';
+const TIMERS_KEY = '@Baking_Timers';
 
-interface Item {
+interface Timer {
   id: string;
-  text: string;
-  completed: boolean;
+  name: string;
+  totalSeconds: number;
+  remainingSeconds: number;
+  isRunning: boolean;
+  isPaused: boolean;
+  isFinished: boolean;
   createdAt: string;
 }
 
+interface Preset {
+  name: string;
+  emoji: string;
+  minutes: number;
+}
+
+const PRESETS: Preset[] = [
+  { name: 'Cookies', emoji: '🍪', minutes: 12 },
+  { name: 'Cake', emoji: '🎂', minutes: 30 },
+  { name: 'Bread', emoji: '🍞', minutes: 45 },
+  { name: 'Pizza', emoji: '🍕', minutes: 15 },
+  { name: 'Muffins', emoji: '🧁', minutes: 20 },
+  { name: 'Brownies', emoji: '🍫', minutes: 25 },
+];
+
 export default function App() {
-  const [items, setItems] = useState<Item[]>([]);
-  const [input, setInput] = useState('');
-  const [showModal, setShowModal] = useState(false);
+  const [timers, setTimers] = useState<Timer[]>([]);
+  const [showAddModal, setShowAddModal] = useState(false);
+  const [timerName, setTimerName] = useState('');
+  const [minutes, setMinutes] = useState('');
+  const [seconds, setSeconds] = useState('');
   const [count, setCount] = useState(0);
+  const [sound, setSound] = useState<Audio.Sound | null>(null);
+  const intervalRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
     initializeAds();
-    loadData();
+    loadTimers();
+    loadSound();
+
+    return () => {
+      if (intervalRef.current) clearInterval(intervalRef.current);
+      if (sound) sound.unloadAsync();
+    };
   }, []);
 
-  const loadData = async () => {
+  useEffect(() => {
+    if (intervalRef.current) clearInterval(intervalRef.current);
+
+    const activeTimers = timers.filter(t => t.isRunning && !t.isFinished);
+    if (activeTimers.length > 0) {
+      intervalRef.current = setInterval(() => {
+        setTimers(prev => {
+          const updated = prev.map(timer => {
+            if (!timer.isRunning || timer.isFinished) return timer;
+
+            const newRemaining = timer.remainingSeconds - 1;
+            if (newRemaining <= 0) {
+              playSound();
+              return {
+                ...timer,
+                remainingSeconds: 0,
+                isRunning: false,
+                isFinished: true,
+              };
+            }
+
+            return { ...timer, remainingSeconds: newRemaining };
+          });
+
+          saveTimers(updated);
+          return updated;
+        });
+      }, 1000);
+    }
+
+    return () => {
+      if (intervalRef.current) clearInterval(intervalRef.current);
+    };
+  }, [timers]);
+
+  const loadSound = async () => {
     try {
-      const saved = await AsyncStorage.getItem(STORAGE_KEY);
-      if (saved) setItems(JSON.parse(saved));
+      const { sound: newSound } = await Audio.Sound.createAsync(
+        require('./assets/notification.mp3'),
+        { shouldPlay: false }
+      );
+      setSound(newSound);
+    } catch (error) {
+      console.log('Sound load error:', error);
+    }
+  };
+
+  const playSound = async () => {
+    try {
+      if (sound) {
+        await sound.replayAsync();
+      }
+    } catch (error) {
+      console.log('Sound play error:', error);
+    }
+  };
+
+  const loadTimers = async () => {
+    try {
+      const saved = await AsyncStorage.getItem(TIMERS_KEY);
+      if (saved) {
+        const loaded = JSON.parse(saved);
+        // Reset all timers to not running on app load
+        setTimers(loaded.map((t: Timer) => ({ ...t, isRunning: false })));
+      }
     } catch (error) {
       console.error('Load error:', error);
     }
   };
 
-  const saveData = async (data: Item[]) => {
+  const saveTimers = async (data: Timer[]) => {
     try {
-      await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-      setItems(data);
+      await AsyncStorage.setItem(TIMERS_KEY, JSON.stringify(data));
     } catch (error) {
       console.error('Save error:', error);
     }
   };
 
-  const addItem = () => {
-    if (!input.trim()) return;
-    const newItem: Item = {
+  const addTimer = (name: string, totalMinutes: number) => {
+    if (timers.length >= 6) {
+      Alert.alert('Limit Reached', 'Maximum 6 timers allowed');
+      return;
+    }
+
+    const totalSecs = totalMinutes * 60;
+    const newTimer: Timer = {
       id: Date.now().toString(),
-      text: input,
-      completed: false,
+      name,
+      totalSeconds: totalSecs,
+      remainingSeconds: totalSecs,
+      isRunning: false,
+      isPaused: false,
+      isFinished: false,
       createdAt: new Date().toISOString(),
     };
-    saveData([newItem, ...items]);
-    setInput('');
-    setShowModal(false);
+
+    const updated = [...timers, newTimer];
+    setTimers(updated);
+    saveTimers(updated);
+    setShowAddModal(false);
+    resetAddForm();
+
     const newCount = count + 1;
     setCount(newCount);
     if (newCount % 5 === 0) showInterstitialAd();
   };
 
-  const toggleItem = (id: string) => {
-    saveData(items.map(i => i.id === id ? { ...i, completed: !i.completed } : i));
+  const addCustomTimer = () => {
+    if (!timerName.trim()) {
+      Alert.alert('Error', 'Please enter a timer name');
+      return;
+    }
+
+    const mins = parseInt(minutes) || 0;
+    const secs = parseInt(seconds) || 0;
+    const totalMinutes = mins + secs / 60;
+
+    if (totalMinutes === 0) {
+      Alert.alert('Error', 'Please enter a valid time');
+      return;
+    }
+
+    addTimer(timerName, totalMinutes);
   };
 
-  const deleteItem = (id: string) => {
-    saveData(items.filter(i => i.id !== id));
+  const addPresetTimer = (preset: Preset) => {
+    addTimer(preset.name + ' ' + preset.emoji, preset.minutes);
   };
 
-  const completed = items.filter(i => i.completed).length;
+  const resetAddForm = () => {
+    setTimerName('');
+    setMinutes('');
+    setSeconds('');
+  };
+
+  const toggleTimer = (id: string) => {
+    setTimers(prev => {
+      const updated = prev.map(t => {
+        if (t.id !== id) return t;
+
+        if (t.isFinished) {
+          // Reset timer
+          return {
+            ...t,
+            remainingSeconds: t.totalSeconds,
+            isRunning: true,
+            isPaused: false,
+            isFinished: false,
+          };
+        }
+
+        return {
+          ...t,
+          isRunning: !t.isRunning,
+          isPaused: !t.isRunning ? false : true,
+        };
+      });
+
+      saveTimers(updated);
+      return updated;
+    });
+  };
+
+  const deleteTimer = (id: string) => {
+    const updated = timers.filter(t => t.id !== id);
+    setTimers(updated);
+    saveTimers(updated);
+  };
+
+  const resetTimer = (id: string) => {
+    setTimers(prev => {
+      const updated = prev.map(t =>
+        t.id === id
+          ? {
+              ...t,
+              remainingSeconds: t.totalSeconds,
+              isRunning: false,
+              isPaused: false,
+              isFinished: false,
+            }
+          : t
+      );
+      saveTimers(updated);
+      return updated;
+    });
+  };
+
+  const formatTime = (seconds: number): string => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+  };
+
+  const getTimerProgress = (timer: Timer): number => {
+    return (timer.remainingSeconds / timer.totalSeconds) * 100;
+  };
+
+  const getTimerColor = (timer: Timer): string => {
+    if (timer.isFinished) return colors.status.success;
+    const progress = getTimerProgress(timer);
+    if (progress < 25) return colors.status.error;
+    if (progress < 50) return colors.status.warning;
+    return colors.primary;
+  };
 
   return (
     <SafeAreaView style={styles.container}>
       <StatusBar style="dark" />
+
       <View style={styles.header}>
         <Text style={styles.title}>Baking Timers</Text>
-        <Text style={styles.count}>{completed}/{items.length}</Text>
+        <Text style={styles.activeCount}>
+          {timers.filter(t => t.isRunning).length}/{timers.length}
+        </Text>
       </View>
+
       <FlatList
-        data={items}
-        keyExtractor={i => i.id}
+        data={timers}
+        keyExtractor={item => item.id}
         contentContainerStyle={styles.list}
-        ListEmptyComponent={<Text style={styles.empty}>No items yet</Text>}
+        ListEmptyComponent={
+          <View style={styles.emptyState}>
+            <Text style={styles.emptyEmoji}>⏱️</Text>
+            <Text style={styles.emptyText}>No timers yet</Text>
+            <Text style={styles.emptySubtext}>Tap + to add a timer</Text>
+          </View>
+        }
         renderItem={({ item }) => (
-          <TouchableOpacity
-            style={styles.item}
-            onPress={() => toggleItem(item.id)}
-            onLongPress={() => deleteItem(item.id)}
+          <View
+            style={[
+              styles.timerCard,
+              item.isFinished && styles.timerCardFinished,
+            ]}
           >
-            <View style={[styles.check, item.completed && styles.checkActive]}>
-              {item.completed && <Text style={styles.checkmark}>✓</Text>}
+            <View style={styles.timerHeader}>
+              <Text style={styles.timerName}>{item.name}</Text>
+              <TouchableOpacity onPress={() => deleteTimer(item.id)}>
+                <Text style={styles.deleteBtn}>✕</Text>
+              </TouchableOpacity>
             </View>
-            <Text style={[styles.itemText, item.completed && styles.itemDone]}>{item.text}</Text>
-          </TouchableOpacity>
-        )}
-      />
-      <TouchableOpacity style={styles.fab} onPress={() => setShowModal(true)}>
-        <Text style={styles.fabText}>+</Text>
-      </TouchableOpacity>
-      <AdBanner />
-      <Modal visible={showModal} animationType="slide" transparent>
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Add New</Text>
-            <TextInput
-              style={styles.input}
-              value={input}
-              onChangeText={setInput}
-              placeholder="Enter text..."
-              autoFocus
-            />
-            <View style={styles.buttons}>
-              <TouchableOpacity style={[styles.btn, styles.btnCancel]} onPress={() => setShowModal(false)}>
-                <Text style={styles.btnTextCancel}>Cancel</Text>
+
+            <View style={styles.timerBody}>
+              <Text
+                style={[
+                  styles.timeDisplay,
+                  { color: getTimerColor(item) },
+                  item.isFinished && styles.timeDisplayFinished,
+                ]}
+              >
+                {formatTime(item.remainingSeconds)}
+              </Text>
+
+              {!item.isFinished && (
+                <View style={styles.progressBar}>
+                  <View
+                    style={[
+                      styles.progressFill,
+                      {
+                        width: `${getTimerProgress(item)}%`,
+                        backgroundColor: getTimerColor(item),
+                      },
+                    ]}
+                  />
+                </View>
+              )}
+
+              {item.isFinished && (
+                <Text style={styles.finishedText}>Timer Finished!</Text>
+              )}
+            </View>
+
+            <View style={styles.timerActions}>
+              <TouchableOpacity
+                style={[
+                  styles.actionBtn,
+                  item.isRunning && styles.actionBtnPause,
+                  item.isFinished && styles.actionBtnReset,
+                ]}
+                onPress={() => toggleTimer(item.id)}
+              >
+                <Text style={styles.actionBtnText}>
+                  {item.isFinished
+                    ? 'Restart'
+                    : item.isRunning
+                    ? 'Pause'
+                    : 'Start'}
+                </Text>
               </TouchableOpacity>
-              <TouchableOpacity style={[styles.btn, styles.btnAdd]} onPress={addItem}>
-                <Text style={styles.btnText}>Add</Text>
-              </TouchableOpacity>
+
+              {!item.isFinished && (
+                <TouchableOpacity
+                  style={styles.actionBtnSecondary}
+                  onPress={() => resetTimer(item.id)}
+                >
+                  <Text style={styles.actionBtnSecondaryText}>Reset</Text>
+                </TouchableOpacity>
+              )}
             </View>
           </View>
-        </View>
+        )}
+      />
+
+      {timers.length < 6 && (
+        <TouchableOpacity
+          style={styles.fab}
+          onPress={() => setShowAddModal(true)}
+        >
+          <Text style={styles.fabText}>+</Text>
+        </TouchableOpacity>
+      )}
+
+      <AdBanner />
+
+      <Modal visible={showAddModal} animationType="slide">
+        <SafeAreaView style={styles.modalContainer}>
+          <View style={styles.modalHeader}>
+            <Text style={styles.modalTitle}>Add Timer</Text>
+            <TouchableOpacity
+              onPress={() => {
+                setShowAddModal(false);
+                resetAddForm();
+              }}
+            >
+              <Text style={styles.closeBtn}>✕</Text>
+            </TouchableOpacity>
+          </View>
+
+          <ScrollView style={styles.modalContent}>
+            <Text style={styles.sectionTitle}>Quick Presets</Text>
+            <View style={styles.presetsGrid}>
+              {PRESETS.map((preset, index) => (
+                <TouchableOpacity
+                  key={index}
+                  style={styles.presetCard}
+                  onPress={() => addPresetTimer(preset)}
+                >
+                  <Text style={styles.presetEmoji}>{preset.emoji}</Text>
+                  <Text style={styles.presetName}>{preset.name}</Text>
+                  <Text style={styles.presetTime}>{preset.minutes} min</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            <Text style={styles.sectionTitle}>Custom Timer</Text>
+            <View style={styles.customForm}>
+              <Text style={styles.label}>Timer Name</Text>
+              <TextInput
+                style={styles.input}
+                value={timerName}
+                onChangeText={setTimerName}
+                placeholder="e.g., Chocolate Chip Cookies"
+                placeholderTextColor={colors.gray.dark}
+              />
+
+              <Text style={styles.label}>Duration</Text>
+              <View style={styles.timeInputRow}>
+                <View style={styles.timeInputGroup}>
+                  <TextInput
+                    style={styles.timeInput}
+                    value={minutes}
+                    onChangeText={setMinutes}
+                    placeholder="00"
+                    placeholderTextColor={colors.gray.dark}
+                    keyboardType="number-pad"
+                    maxLength={3}
+                  />
+                  <Text style={styles.timeLabel}>minutes</Text>
+                </View>
+
+                <Text style={styles.timeSeparator}>:</Text>
+
+                <View style={styles.timeInputGroup}>
+                  <TextInput
+                    style={styles.timeInput}
+                    value={seconds}
+                    onChangeText={setSeconds}
+                    placeholder="00"
+                    placeholderTextColor={colors.gray.dark}
+                    keyboardType="number-pad"
+                    maxLength={2}
+                  />
+                  <Text style={styles.timeLabel}>seconds</Text>
+                </View>
+              </View>
+
+              <TouchableOpacity
+                style={styles.addBtn}
+                onPress={addCustomTimer}
+              >
+                <Text style={styles.addBtnText}>Add Timer</Text>
+              </TouchableOpacity>
+            </View>
+
+            <View style={{ height: 40 }} />
+          </ScrollView>
+        </SafeAreaView>
       </Modal>
     </SafeAreaView>
   );
@@ -127,27 +462,234 @@ export default function App() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.background },
-  header: { flexDirection: 'row', justifyContent: 'space-between', padding: spacing.lg, alignItems: 'center' },
-  title: { fontSize: 24, fontWeight: 'bold', color: colors.primary },
-  count: { fontSize: 16, color: colors.gray.dark },
-  list: { paddingHorizontal: spacing.lg, paddingBottom: 100 },
-  empty: { textAlign: 'center', marginTop: spacing.xl, color: colors.gray.medium, fontSize: 16 },
-  item: { backgroundColor: colors.white, borderRadius: 12, padding: spacing.lg, marginBottom: spacing.sm, flexDirection: 'row', alignItems: 'center' },
-  check: { width: 24, height: 24, borderRadius: 12, borderWidth: 2, borderColor: colors.gray.medium, marginRight: spacing.md, justifyContent: 'center', alignItems: 'center' },
-  checkActive: { backgroundColor: colors.status.success, borderColor: colors.status.success },
-  checkmark: { color: colors.white, fontSize: 14, fontWeight: 'bold' },
-  itemText: { flex: 1, fontSize: 16, color: colors.text },
-  itemDone: { textDecorationLine: 'line-through', color: colors.gray.medium },
-  fab: { position: 'absolute', right: spacing.lg, bottom: 80, width: 56, height: 56, borderRadius: 28, backgroundColor: colors.primary, justifyContent: 'center', alignItems: 'center', elevation: 8 },
-  fabText: { color: colors.white, fontSize: 32 },
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
-  modalContent: { backgroundColor: colors.white, borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: spacing.xl },
-  modalTitle: { fontSize: 20, fontWeight: 'bold', color: colors.primary, marginBottom: spacing.lg },
-  input: { backgroundColor: colors.gray.light, padding: spacing.md, borderRadius: 12, fontSize: 16, marginBottom: spacing.lg },
-  buttons: { flexDirection: 'row', gap: spacing.md },
-  btn: { flex: 1, padding: spacing.lg, borderRadius: 12, alignItems: 'center' },
-  btnCancel: { backgroundColor: colors.gray.light },
-  btnAdd: { backgroundColor: colors.primary },
-  btnText: { color: colors.white, fontSize: 16, fontWeight: 'bold' },
-  btnTextCancel: { color: colors.text, fontSize: 16, fontWeight: '600' },
+  header: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: spacing.lg,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.gray.light,
+  },
+  title: { fontSize: 28, fontWeight: 'bold', color: colors.primary },
+  activeCount: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: colors.gray.dark,
+  },
+  list: { padding: spacing.lg, paddingBottom: 100 },
+  emptyState: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: spacing.xl * 3,
+  },
+  emptyEmoji: { fontSize: 64, marginBottom: spacing.md },
+  emptyText: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: colors.gray.dark,
+    marginBottom: spacing.xs,
+  },
+  emptySubtext: { fontSize: 14, color: colors.gray.medium },
+  timerCard: {
+    backgroundColor: colors.white,
+    borderRadius: 16,
+    padding: spacing.lg,
+    marginBottom: spacing.md,
+    elevation: 2,
+  },
+  timerCardFinished: {
+    borderWidth: 2,
+    borderColor: colors.status.success,
+  },
+  timerHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: spacing.md,
+  },
+  timerName: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: colors.text,
+    flex: 1,
+  },
+  deleteBtn: {
+    fontSize: 24,
+    color: colors.gray.dark,
+    fontWeight: '300',
+    paddingHorizontal: spacing.sm,
+  },
+  timerBody: { marginBottom: spacing.lg },
+  timeDisplay: {
+    fontSize: 56,
+    fontWeight: 'bold',
+    textAlign: 'center',
+    marginBottom: spacing.md,
+    fontVariant: ['tabular-nums'],
+  },
+  timeDisplayFinished: { color: colors.status.success },
+  progressBar: {
+    height: 8,
+    backgroundColor: colors.gray.light,
+    borderRadius: 4,
+    overflow: 'hidden',
+  },
+  progressFill: { height: '100%', borderRadius: 4 },
+  finishedText: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: colors.status.success,
+    textAlign: 'center',
+  },
+  timerActions: {
+    flexDirection: 'row',
+    gap: spacing.md,
+  },
+  actionBtn: {
+    flex: 1,
+    backgroundColor: colors.primary,
+    padding: spacing.md,
+    borderRadius: 12,
+    alignItems: 'center',
+  },
+  actionBtnPause: { backgroundColor: colors.status.warning },
+  actionBtnReset: { backgroundColor: colors.status.success },
+  actionBtnText: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: colors.white,
+  },
+  actionBtnSecondary: {
+    flex: 1,
+    backgroundColor: colors.gray.light,
+    padding: spacing.md,
+    borderRadius: 12,
+    alignItems: 'center',
+  },
+  actionBtnSecondaryText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: colors.text,
+  },
+  fab: {
+    position: 'absolute',
+    right: spacing.lg,
+    bottom: 80,
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: colors.primary,
+    justifyContent: 'center',
+    alignItems: 'center',
+    elevation: 8,
+  },
+  fabText: { fontSize: 32, fontWeight: '300', color: colors.white },
+  modalContainer: { flex: 1, backgroundColor: colors.background },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: spacing.lg,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.gray.light,
+  },
+  modalTitle: { fontSize: 24, fontWeight: 'bold', color: colors.primary },
+  closeBtn: { fontSize: 32, color: colors.gray.dark, fontWeight: '300' },
+  modalContent: { flex: 1, padding: spacing.lg },
+  sectionTitle: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: colors.text,
+    marginBottom: spacing.md,
+    marginTop: spacing.md,
+  },
+  presetsGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.md,
+    marginBottom: spacing.lg,
+  },
+  presetCard: {
+    width: '30%',
+    aspectRatio: 1,
+    backgroundColor: colors.white,
+    borderRadius: 12,
+    padding: spacing.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+    elevation: 1,
+  },
+  presetEmoji: { fontSize: 32, marginBottom: spacing.xs },
+  presetName: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: colors.text,
+    textAlign: 'center',
+    marginBottom: spacing.xs,
+  },
+  presetTime: {
+    fontSize: 11,
+    color: colors.primary,
+    fontWeight: '600',
+  },
+  customForm: {
+    backgroundColor: colors.white,
+    borderRadius: 12,
+    padding: spacing.lg,
+    marginBottom: spacing.lg,
+  },
+  label: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: colors.text,
+    marginBottom: spacing.sm,
+    marginTop: spacing.sm,
+  },
+  input: {
+    backgroundColor: colors.gray.light,
+    padding: spacing.md,
+    borderRadius: 12,
+    fontSize: 16,
+    color: colors.text,
+  },
+  timeInputRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+  },
+  timeInputGroup: { flex: 1, alignItems: 'center' },
+  timeInput: {
+    backgroundColor: colors.gray.light,
+    padding: spacing.md,
+    borderRadius: 12,
+    fontSize: 24,
+    fontWeight: 'bold',
+    textAlign: 'center',
+    width: '100%',
+    color: colors.text,
+    fontVariant: ['tabular-nums'],
+  },
+  timeLabel: {
+    fontSize: 12,
+    color: colors.gray.dark,
+    marginTop: spacing.xs,
+  },
+  timeSeparator: {
+    fontSize: 32,
+    fontWeight: 'bold',
+    color: colors.text,
+    marginBottom: 20,
+  },
+  addBtn: {
+    backgroundColor: colors.primary,
+    padding: spacing.lg,
+    borderRadius: 12,
+    alignItems: 'center',
+    marginTop: spacing.lg,
+  },
+  addBtnText: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: colors.white,
+  },
 });
