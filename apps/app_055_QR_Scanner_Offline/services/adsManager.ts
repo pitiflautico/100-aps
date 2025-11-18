@@ -52,5 +52,14 @@ class AdsManagerClass {
 // Create singleton instance
 const adsManagerInstance = new AdsManagerClass();
 
+// Export functions for backwards compatibility
+export const initializeAds = () => {
+  // Already initialized in constructor
+};
+
+export const showInterstitialAd = () => {
+  return AdsManagerClass.showInterstitialAd();
+};
+
 // Export the class for static method access
 export const AdsManager = AdsManagerClass;

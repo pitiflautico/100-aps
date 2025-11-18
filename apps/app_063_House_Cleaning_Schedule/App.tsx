@@ -1,5 +1,14 @@
 import React, { useState, useEffect } from 'react';
-import { StyleSheet, Text, View, TouchableOpacity, SafeAreaView, FlatList, TextInput, Modal } from 'react-native';
+import {
+  StyleSheet,
+  Text,
+  View,
+  TouchableOpacity,
+  SafeAreaView,
+  FlatList,
+  Modal,
+  ScrollView,
+} from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { colors, spacing } from './theme';
@@ -8,18 +17,38 @@ import { initializeAds, showInterstitialAd } from './services/adsManager';
 
 const STORAGE_KEY = '@House_Cleaning_Schedule_data';
 
-interface Item {
+type Frequency = 'Daily' | 'Weekly' | 'Bi-weekly' | 'Monthly';
+
+interface Task {
   id: string;
-  text: string;
-  completed: boolean;
+  name: string;
+  room: string;
+  frequency: Frequency;
+  lastCleaned: string | null;
   createdAt: string;
 }
 
+const ROOMS = ['Kitchen', 'Bathroom', 'Bedroom', 'Living Room', 'Dining Room', 'Office', 'Garage', 'Laundry'];
+const COMMON_TASKS = [
+  { name: 'Mop Floor', rooms: ['Kitchen', 'Bathroom', 'Laundry'] },
+  { name: 'Vacuum', rooms: ['Bedroom', 'Living Room', 'Dining Room', 'Office'] },
+  { name: 'Dust Surfaces', rooms: ['All'] },
+  { name: 'Clean Windows', rooms: ['All'] },
+  { name: 'Wipe Counters', rooms: ['Kitchen', 'Bathroom'] },
+  { name: 'Clean Toilet', rooms: ['Bathroom'] },
+  { name: 'Change Sheets', rooms: ['Bedroom'] },
+  { name: 'Empty Trash', rooms: ['All'] },
+  { name: 'Organize', rooms: ['All'] },
+  { name: 'Deep Clean', rooms: ['All'] },
+];
+
 export default function App() {
-  const [items, setItems] = useState<Item[]>([]);
-  const [input, setInput] = useState('');
-  const [showModal, setShowModal] = useState(false);
-  const [count, setCount] = useState(0);
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [showAddModal, setShowAddModal] = useState(false);
+  const [selectedRoom, setSelectedRoom] = useState<string>('Kitchen');
+  const [selectedFrequency, setSelectedFrequency] = useState<Frequency>('Weekly');
+  const [actionCount, setActionCount] = useState(0);
+  const [filterRoom, setFilterRoom] = useState<string>('All');
 
   useEffect(() => {
     initializeAds();
@@ -29,95 +58,327 @@ export default function App() {
   const loadData = async () => {
     try {
       const saved = await AsyncStorage.getItem(STORAGE_KEY);
-      if (saved) setItems(JSON.parse(saved));
+      if (saved) {
+        setTasks(JSON.parse(saved));
+      }
     } catch (error) {
       console.error('Load error:', error);
     }
   };
 
-  const saveData = async (data: Item[]) => {
+  const saveData = async (newTasks: Task[]) => {
     try {
-      await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-      setItems(data);
+      await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(newTasks));
+      setTasks(newTasks);
     } catch (error) {
       console.error('Save error:', error);
     }
   };
 
-  const addItem = () => {
-    if (!input.trim()) return;
-    const newItem: Item = {
+  const addTask = (taskName: string) => {
+    const newTask: Task = {
       id: Date.now().toString(),
-      text: input,
-      completed: false,
+      name: taskName,
+      room: selectedRoom,
+      frequency: selectedFrequency,
+      lastCleaned: null,
       createdAt: new Date().toISOString(),
     };
-    saveData([newItem, ...items]);
-    setInput('');
-    setShowModal(false);
-    const newCount = count + 1;
-    setCount(newCount);
+
+    saveData([...tasks, newTask]);
+    setShowAddModal(false);
+
+    const newCount = actionCount + 1;
+    setActionCount(newCount);
     if (newCount % 5 === 0) showInterstitialAd();
   };
 
-  const toggleItem = (id: string) => {
-    saveData(items.map(i => i.id === id ? { ...i, completed: !i.completed } : i));
+  const markAsDone = (taskId: string) => {
+    const updated = tasks.map(task =>
+      task.id === taskId
+        ? { ...task, lastCleaned: new Date().toISOString() }
+        : task
+    );
+    saveData(updated);
+
+    const newCount = actionCount + 1;
+    setActionCount(newCount);
+    if (newCount % 5 === 0) showInterstitialAd();
   };
 
-  const deleteItem = (id: string) => {
-    saveData(items.filter(i => i.id !== id));
+  const deleteTask = (taskId: string) => {
+    saveData(tasks.filter(t => t.id !== taskId));
   };
 
-  const completed = items.filter(i => i.completed).length;
+  const resetAllTasks = () => {
+    const updated = tasks.map(task => ({
+      ...task,
+      lastCleaned: null,
+    }));
+    saveData(updated);
+  };
+
+  const getDaysSinceLastCleaned = (task: Task): number | null => {
+    if (!task.lastCleaned) return null;
+    const lastCleaned = new Date(task.lastCleaned);
+    const now = new Date();
+    const diffTime = now.getTime() - lastCleaned.getTime();
+    return Math.floor(diffTime / (1000 * 60 * 60 * 24));
+  };
+
+  const isOverdue = (task: Task): boolean => {
+    const days = getDaysSinceLastCleaned(task);
+    if (days === null) return true;
+
+    switch (task.frequency) {
+      case 'Daily': return days >= 1;
+      case 'Weekly': return days >= 7;
+      case 'Bi-weekly': return days >= 14;
+      case 'Monthly': return days >= 30;
+      default: return false;
+    }
+  };
+
+  const getProgress = (period: 'week' | 'month'): number => {
+    const now = new Date();
+    const relevantTasks = tasks.filter(task => {
+      if (period === 'week') {
+        return task.frequency === 'Daily' || task.frequency === 'Weekly';
+      } else {
+        return true;
+      }
+    });
+
+    if (relevantTasks.length === 0) return 0;
+
+    const completedTasks = relevantTasks.filter(task => {
+      if (!task.lastCleaned) return false;
+      const lastCleaned = new Date(task.lastCleaned);
+      const diffDays = (now.getTime() - lastCleaned.getTime()) / (1000 * 60 * 60 * 24);
+
+      if (period === 'week') {
+        return diffDays <= 7;
+      } else {
+        return diffDays <= 30;
+      }
+    });
+
+    return (completedTasks.length / relevantTasks.length) * 100;
+  };
+
+  const formatLastCleaned = (date: string | null): string => {
+    if (!date) return 'Never';
+    const d = new Date(date);
+    const now = new Date();
+    const diffTime = now.getTime() - d.getTime();
+    const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+
+    if (diffDays === 0) return 'Today';
+    if (diffDays === 1) return 'Yesterday';
+    if (diffDays < 7) return `${diffDays} days ago`;
+    if (diffDays < 30) return `${Math.floor(diffDays / 7)} weeks ago`;
+    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  };
+
+  const filteredTasks = filterRoom === 'All'
+    ? tasks
+    : tasks.filter(t => t.room === filterRoom);
+
+  const weekProgress = getProgress('week');
+  const monthProgress = getProgress('month');
 
   return (
     <SafeAreaView style={styles.container}>
-      <StatusBar style="dark" />
+      <StatusBar style="light" />
+
       <View style={styles.header}>
-        <Text style={styles.title}>House Cleaning Schedule</Text>
-        <Text style={styles.count}>{completed}/{items.length}</Text>
+        <Text style={styles.title}>Cleaning Schedule</Text>
       </View>
-      <FlatList
-        data={items}
-        keyExtractor={i => i.id}
-        contentContainerStyle={styles.list}
-        ListEmptyComponent={<Text style={styles.empty}>No items yet</Text>}
-        renderItem={({ item }) => (
-          <TouchableOpacity
-            style={styles.item}
-            onPress={() => toggleItem(item.id)}
-            onLongPress={() => deleteItem(item.id)}
-          >
-            <View style={[styles.check, item.completed && styles.checkActive]}>
-              {item.completed && <Text style={styles.checkmark}>✓</Text>}
+
+      <ScrollView style={styles.content}>
+        {/* Progress Section */}
+        <View style={styles.progressContainer}>
+          <View style={styles.progressCard}>
+            <Text style={styles.progressLabel}>This Week</Text>
+            <View style={styles.progressBar}>
+              <View style={[styles.progressFill, { width: `${weekProgress}%` }]} />
             </View>
-            <Text style={[styles.itemText, item.completed && styles.itemDone]}>{item.text}</Text>
-          </TouchableOpacity>
-        )}
-      />
-      <TouchableOpacity style={styles.fab} onPress={() => setShowModal(true)}>
+            <Text style={styles.progressPercent}>{weekProgress.toFixed(0)}%</Text>
+          </View>
+          <View style={styles.progressCard}>
+            <Text style={styles.progressLabel}>This Month</Text>
+            <View style={styles.progressBar}>
+              <View style={[styles.progressFill, { width: `${monthProgress}%` }]} />
+            </View>
+            <Text style={styles.progressPercent}>{monthProgress.toFixed(0)}%</Text>
+          </View>
+        </View>
+
+        {/* Room Filter */}
+        <View style={styles.filterContainer}>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+            <TouchableOpacity
+              style={[styles.filterChip, filterRoom === 'All' && styles.filterChipActive]}
+              onPress={() => setFilterRoom('All')}
+            >
+              <Text style={[styles.filterChipText, filterRoom === 'All' && styles.filterChipTextActive]}>
+                All
+              </Text>
+            </TouchableOpacity>
+            {ROOMS.map(room => (
+              <TouchableOpacity
+                key={room}
+                style={[styles.filterChip, filterRoom === room && styles.filterChipActive]}
+                onPress={() => setFilterRoom(room)}
+              >
+                <Text style={[styles.filterChipText, filterRoom === room && styles.filterChipTextActive]}>
+                  {room}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+        </View>
+
+        {/* Tasks List */}
+        <View style={styles.section}>
+          {filteredTasks.length === 0 ? (
+            <Text style={styles.emptyText}>No cleaning tasks yet</Text>
+          ) : (
+            <FlatList
+              data={filteredTasks.sort((a, b) => {
+                const aOverdue = isOverdue(a);
+                const bOverdue = isOverdue(b);
+                if (aOverdue && !bOverdue) return -1;
+                if (!aOverdue && bOverdue) return 1;
+                return 0;
+              })}
+              keyExtractor={item => item.id}
+              scrollEnabled={false}
+              renderItem={({ item }) => {
+                const overdue = isOverdue(item);
+                const daysSince = getDaysSinceLastCleaned(item);
+
+                return (
+                  <TouchableOpacity
+                    style={[styles.taskCard, overdue && styles.taskCardOverdue]}
+                    onLongPress={() => deleteTask(item.id)}
+                  >
+                    <View style={styles.taskHeader}>
+                      <View style={styles.taskInfo}>
+                        <Text style={styles.taskName}>{item.name}</Text>
+                        <View style={styles.taskMeta}>
+                          <Text style={styles.taskRoom}>{item.room}</Text>
+                          <Text style={styles.taskSeparator}>•</Text>
+                          <Text style={styles.taskFrequency}>{item.frequency}</Text>
+                        </View>
+                      </View>
+                      {overdue && (
+                        <View style={styles.overdueBadge}>
+                          <Text style={styles.overdueText}>Due!</Text>
+                        </View>
+                      )}
+                    </View>
+
+                    <View style={styles.taskFooter}>
+                      <Text style={styles.lastCleanedText}>
+                        Last cleaned: {formatLastCleaned(item.lastCleaned)}
+                      </Text>
+                      <TouchableOpacity
+                        style={styles.doneButton}
+                        onPress={() => markAsDone(item.id)}
+                      >
+                        <Text style={styles.doneButtonText}>Mark Done</Text>
+                      </TouchableOpacity>
+                    </View>
+                  </TouchableOpacity>
+                );
+              }}
+            />
+          )}
+        </View>
+
+        <TouchableOpacity style={styles.resetButton} onPress={resetAllTasks}>
+          <Text style={styles.resetButtonText}>Reset All Tasks</Text>
+        </TouchableOpacity>
+      </ScrollView>
+
+      <TouchableOpacity style={styles.fab} onPress={() => setShowAddModal(true)}>
         <Text style={styles.fabText}>+</Text>
       </TouchableOpacity>
+
       <AdBanner />
-      <Modal visible={showModal} animationType="slide" transparent>
+
+      {/* Add Task Modal */}
+      <Modal visible={showAddModal} animationType="slide" transparent>
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Add New</Text>
-            <TextInput
-              style={styles.input}
-              value={input}
-              onChangeText={setInput}
-              placeholder="Enter text..."
-              autoFocus
-            />
-            <View style={styles.buttons}>
-              <TouchableOpacity style={[styles.btn, styles.btnCancel]} onPress={() => setShowModal(false)}>
-                <Text style={styles.btnTextCancel}>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={[styles.btn, styles.btnAdd]} onPress={addItem}>
-                <Text style={styles.btnText}>Add</Text>
-              </TouchableOpacity>
-            </View>
+            <Text style={styles.modalTitle}>Add Cleaning Task</Text>
+
+            <ScrollView>
+              <Text style={styles.inputLabel}>Select Room</Text>
+              <View style={styles.roomGrid}>
+                {ROOMS.map(room => (
+                  <TouchableOpacity
+                    key={room}
+                    style={[
+                      styles.roomButton,
+                      selectedRoom === room && styles.roomButtonActive
+                    ]}
+                    onPress={() => setSelectedRoom(room)}
+                  >
+                    <Text style={[
+                      styles.roomButtonText,
+                      selectedRoom === room && styles.roomButtonTextActive
+                    ]}>
+                      {room}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+
+              <Text style={styles.inputLabel}>Frequency</Text>
+              <View style={styles.frequencyButtons}>
+                {(['Daily', 'Weekly', 'Bi-weekly', 'Monthly'] as Frequency[]).map(freq => (
+                  <TouchableOpacity
+                    key={freq}
+                    style={[
+                      styles.frequencyButton,
+                      selectedFrequency === freq && styles.frequencyButtonActive
+                    ]}
+                    onPress={() => setSelectedFrequency(freq)}
+                  >
+                    <Text style={[
+                      styles.frequencyButtonText,
+                      selectedFrequency === freq && styles.frequencyButtonTextActive
+                    ]}>
+                      {freq}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+
+              <Text style={styles.inputLabel}>Select Task</Text>
+              <View style={styles.taskButtons}>
+                {COMMON_TASKS
+                  .filter(t => t.rooms.includes('All') || t.rooms.includes(selectedRoom))
+                  .map(task => (
+                    <TouchableOpacity
+                      key={task.name}
+                      style={styles.taskButton}
+                      onPress={() => addTask(task.name)}
+                    >
+                      <Text style={styles.taskButtonText}>{task.name}</Text>
+                    </TouchableOpacity>
+                  ))}
+              </View>
+            </ScrollView>
+
+            <TouchableOpacity
+              style={styles.closeButton}
+              onPress={() => setShowAddModal(false)}
+            >
+              <Text style={styles.closeButtonText}>Close</Text>
+            </TouchableOpacity>
           </View>
         </View>
       </Modal>
@@ -126,28 +387,291 @@ export default function App() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: colors.background },
-  header: { flexDirection: 'row', justifyContent: 'space-between', padding: spacing.lg, alignItems: 'center' },
-  title: { fontSize: 24, fontWeight: 'bold', color: colors.primary },
-  count: { fontSize: 16, color: colors.gray.dark },
-  list: { paddingHorizontal: spacing.lg, paddingBottom: 100 },
-  empty: { textAlign: 'center', marginTop: spacing.xl, color: colors.gray.medium, fontSize: 16 },
-  item: { backgroundColor: colors.white, borderRadius: 12, padding: spacing.lg, marginBottom: spacing.sm, flexDirection: 'row', alignItems: 'center' },
-  check: { width: 24, height: 24, borderRadius: 12, borderWidth: 2, borderColor: colors.gray.medium, marginRight: spacing.md, justifyContent: 'center', alignItems: 'center' },
-  checkActive: { backgroundColor: colors.status.success, borderColor: colors.status.success },
-  checkmark: { color: colors.white, fontSize: 14, fontWeight: 'bold' },
-  itemText: { flex: 1, fontSize: 16, color: colors.text },
-  itemDone: { textDecorationLine: 'line-through', color: colors.gray.medium },
-  fab: { position: 'absolute', right: spacing.lg, bottom: 80, width: 56, height: 56, borderRadius: 28, backgroundColor: colors.primary, justifyContent: 'center', alignItems: 'center', elevation: 8 },
-  fabText: { color: colors.white, fontSize: 32 },
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
-  modalContent: { backgroundColor: colors.white, borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: spacing.xl },
-  modalTitle: { fontSize: 20, fontWeight: 'bold', color: colors.primary, marginBottom: spacing.lg },
-  input: { backgroundColor: colors.gray.light, padding: spacing.md, borderRadius: 12, fontSize: 16, marginBottom: spacing.lg },
-  buttons: { flexDirection: 'row', gap: spacing.md },
-  btn: { flex: 1, padding: spacing.lg, borderRadius: 12, alignItems: 'center' },
-  btnCancel: { backgroundColor: colors.gray.light },
-  btnAdd: { backgroundColor: colors.primary },
-  btnText: { color: colors.white, fontSize: 16, fontWeight: 'bold' },
-  btnTextCancel: { color: colors.text, fontSize: 16, fontWeight: '600' },
+  container: {
+    flex: 1,
+    backgroundColor: colors.background,
+  },
+  header: {
+    backgroundColor: colors.primary,
+    padding: spacing.lg,
+  },
+  title: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    color: colors.white,
+  },
+  content: {
+    flex: 1,
+  },
+  progressContainer: {
+    flexDirection: 'row',
+    padding: spacing.md,
+    gap: spacing.md,
+  },
+  progressCard: {
+    flex: 1,
+    backgroundColor: colors.white,
+    borderRadius: 12,
+    padding: spacing.md,
+  },
+  progressLabel: {
+    fontSize: 12,
+    color: colors.gray.dark,
+    marginBottom: spacing.sm,
+  },
+  progressBar: {
+    height: 8,
+    backgroundColor: colors.gray.light,
+    borderRadius: 4,
+    overflow: 'hidden',
+    marginBottom: spacing.sm,
+  },
+  progressFill: {
+    height: '100%',
+    backgroundColor: colors.primary,
+  },
+  progressPercent: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: colors.primary,
+    textAlign: 'center',
+  },
+  filterContainer: {
+    paddingHorizontal: spacing.md,
+    marginBottom: spacing.md,
+  },
+  filterChip: {
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    borderRadius: 20,
+    backgroundColor: colors.gray.light,
+    marginRight: spacing.sm,
+  },
+  filterChipActive: {
+    backgroundColor: colors.primary,
+  },
+  filterChipText: {
+    fontSize: 14,
+    color: colors.text,
+    fontWeight: '600',
+  },
+  filterChipTextActive: {
+    color: colors.white,
+  },
+  section: {
+    padding: spacing.md,
+    paddingBottom: 100,
+  },
+  emptyText: {
+    textAlign: 'center',
+    color: colors.gray.medium,
+    fontSize: 16,
+    marginTop: spacing.xl,
+  },
+  taskCard: {
+    backgroundColor: colors.white,
+    borderRadius: 12,
+    padding: spacing.md,
+    marginBottom: spacing.md,
+  },
+  taskCardOverdue: {
+    borderLeftWidth: 4,
+    borderLeftColor: colors.status.error,
+  },
+  taskHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    marginBottom: spacing.sm,
+  },
+  taskInfo: {
+    flex: 1,
+  },
+  taskName: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: colors.text,
+    marginBottom: 4,
+  },
+  taskMeta: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  taskRoom: {
+    fontSize: 14,
+    color: colors.gray.dark,
+  },
+  taskSeparator: {
+    fontSize: 14,
+    color: colors.gray.medium,
+    marginHorizontal: spacing.sm,
+  },
+  taskFrequency: {
+    fontSize: 14,
+    color: colors.gray.dark,
+  },
+  overdueBadge: {
+    backgroundColor: colors.status.error,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 4,
+    borderRadius: 6,
+  },
+  overdueText: {
+    color: colors.white,
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  taskFooter: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: spacing.sm,
+  },
+  lastCleanedText: {
+    fontSize: 12,
+    color: colors.gray.medium,
+  },
+  doneButton: {
+    backgroundColor: colors.status.success,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    borderRadius: 8,
+  },
+  doneButtonText: {
+    color: colors.white,
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  resetButton: {
+    margin: spacing.md,
+    marginBottom: 100,
+    padding: spacing.md,
+    borderRadius: 12,
+    backgroundColor: colors.gray.light,
+    alignItems: 'center',
+  },
+  resetButtonText: {
+    color: colors.text,
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  fab: {
+    position: 'absolute',
+    right: spacing.lg,
+    bottom: 80,
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: colors.primary,
+    justifyContent: 'center',
+    alignItems: 'center',
+    elevation: 8,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+  },
+  fabText: {
+    color: colors.white,
+    fontSize: 32,
+    fontWeight: '300',
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'flex-end',
+  },
+  modalContent: {
+    backgroundColor: colors.white,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    padding: spacing.xl,
+    maxHeight: '90%',
+  },
+  modalTitle: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    color: colors.primary,
+    marginBottom: spacing.lg,
+  },
+  inputLabel: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: colors.text,
+    marginBottom: spacing.sm,
+    marginTop: spacing.md,
+  },
+  roomGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.sm,
+    marginBottom: spacing.md,
+  },
+  roomButton: {
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    borderRadius: 8,
+    backgroundColor: colors.gray.light,
+    minWidth: '30%',
+    alignItems: 'center',
+  },
+  roomButtonActive: {
+    backgroundColor: colors.primary,
+  },
+  roomButtonText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: colors.text,
+  },
+  roomButtonTextActive: {
+    color: colors.white,
+  },
+  frequencyButtons: {
+    gap: spacing.sm,
+    marginBottom: spacing.md,
+  },
+  frequencyButton: {
+    padding: spacing.md,
+    borderRadius: 12,
+    backgroundColor: colors.gray.light,
+    alignItems: 'center',
+  },
+  frequencyButtonActive: {
+    backgroundColor: colors.primary,
+  },
+  frequencyButtonText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: colors.text,
+  },
+  frequencyButtonTextActive: {
+    color: colors.white,
+  },
+  taskButtons: {
+    gap: spacing.sm,
+    marginBottom: spacing.md,
+  },
+  taskButton: {
+    padding: spacing.md,
+    borderRadius: 12,
+    backgroundColor: colors.gray.light,
+    alignItems: 'center',
+  },
+  taskButtonText: {
+    fontSize: 16,
+    color: colors.text,
+    fontWeight: '600',
+  },
+  closeButton: {
+    backgroundColor: colors.primary,
+    padding: spacing.lg,
+    borderRadius: 12,
+    alignItems: 'center',
+    marginTop: spacing.md,
+  },
+  closeButtonText: {
+    color: colors.white,
+    fontSize: 16,
+    fontWeight: 'bold',
+  },
 });

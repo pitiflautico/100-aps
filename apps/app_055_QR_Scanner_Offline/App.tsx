@@ -1,25 +1,68 @@
-import React, { useState, useEffect } from 'react';
-import { StyleSheet, Text, View, TouchableOpacity, SafeAreaView, FlatList, TextInput, Modal } from 'react-native';
+import React, { useState, useEffect, useRef } from 'react';
+import {
+  StyleSheet,
+  Text,
+  View,
+  TouchableOpacity,
+  SafeAreaView,
+  ScrollView,
+  TextInput,
+  Modal,
+  FlatList,
+  Share,
+} from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import QRCode from 'react-native-qrcode-svg';
 import { colors, spacing } from './theme';
 import { AdBanner } from './components/AdBanner';
 import { initializeAds, showInterstitialAd } from './services/adsManager';
 
-const STORAGE_KEY = '@QR_Scanner_Offline_data';
+const STORAGE_KEY = '@QR_Library_data';
 
-interface Item {
+interface SavedQR {
   id: string;
-  text: string;
-  completed: boolean;
+  label: string;
+  type: 'text' | 'url' | 'contact' | 'wifi';
+  content: string;
   createdAt: string;
 }
 
+interface ContactData {
+  name: string;
+  phone: string;
+  email: string;
+  organization: string;
+}
+
+interface WiFiData {
+  ssid: string;
+  password: string;
+  encryption: 'WPA' | 'WEP' | 'nopass';
+}
+
 export default function App() {
-  const [items, setItems] = useState<Item[]>([]);
-  const [input, setInput] = useState('');
-  const [showModal, setShowModal] = useState(false);
+  const [activeTab, setActiveTab] = useState<'text' | 'url' | 'contact' | 'wifi'>('text');
+  const [textInput, setTextInput] = useState('');
+  const [urlInput, setUrlInput] = useState('');
+  const [contactData, setContactData] = useState<ContactData>({
+    name: '',
+    phone: '',
+    email: '',
+    organization: '',
+  });
+  const [wifiData, setWiFiData] = useState<WiFiData>({
+    ssid: '',
+    password: '',
+    encryption: 'WPA',
+  });
+  const [savedQRs, setSavedQRs] = useState<SavedQR[]>([]);
+  const [showLibrary, setShowLibrary] = useState(false);
+  const [showSaveModal, setShowSaveModal] = useState(false);
+  const [saveLabel, setSaveLabel] = useState('');
+  const [currentQRContent, setCurrentQRContent] = useState('');
   const [count, setCount] = useState(0);
+  const qrRef = useRef<any>(null);
 
   useEffect(() => {
     initializeAds();
@@ -29,97 +72,379 @@ export default function App() {
   const loadData = async () => {
     try {
       const saved = await AsyncStorage.getItem(STORAGE_KEY);
-      if (saved) setItems(JSON.parse(saved));
+      if (saved) setSavedQRs(JSON.parse(saved));
     } catch (error) {
       console.error('Load error:', error);
     }
   };
 
-  const saveData = async (data: Item[]) => {
-    try {
-      await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-      setItems(data);
-    } catch (error) {
-      console.error('Save error:', error);
-    }
-  };
+  const saveQR = async () => {
+    if (!saveLabel.trim() || !currentQRContent) return;
 
-  const addItem = () => {
-    if (!input.trim()) return;
-    const newItem: Item = {
+    const newQR: SavedQR = {
       id: Date.now().toString(),
-      text: input,
-      completed: false,
+      label: saveLabel,
+      type: activeTab,
+      content: currentQRContent,
       createdAt: new Date().toISOString(),
     };
-    saveData([newItem, ...items]);
-    setInput('');
-    setShowModal(false);
+
+    const updated = [newQR, ...savedQRs];
+    await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+    setSavedQRs(updated);
+    setShowSaveModal(false);
+    setSaveLabel('');
+
     const newCount = count + 1;
     setCount(newCount);
     if (newCount % 5 === 0) showInterstitialAd();
   };
 
-  const toggleItem = (id: string) => {
-    saveData(items.map(i => i.id === id ? { ...i, completed: !i.completed } : i));
+  const deleteQR = async (id: string) => {
+    const updated = savedQRs.filter(qr => qr.id !== id);
+    await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+    setSavedQRs(updated);
   };
 
-  const deleteItem = (id: string) => {
-    saveData(items.filter(i => i.id !== id));
+  const getQRContent = (): string => {
+    switch (activeTab) {
+      case 'text':
+        return textInput;
+      case 'url':
+        return urlInput;
+      case 'contact':
+        return `BEGIN:VCARD\nVERSION:3.0\nFN:${contactData.name}\nTEL:${contactData.phone}\nEMAIL:${contactData.email}\nORG:${contactData.organization}\nEND:VCARD`;
+      case 'wifi':
+        return `WIFI:T:${wifiData.encryption};S:${wifiData.ssid};P:${wifiData.password};;`;
+      default:
+        return '';
+    }
   };
 
-  const completed = items.filter(i => i.completed).length;
+  const qrContent = getQRContent();
+
+  const handleShare = async () => {
+    try {
+      await Share.share({
+        message: qrContent,
+        title: 'QR Code Content',
+      });
+    } catch (error) {
+      console.error('Share error:', error);
+    }
+  };
+
+  const loadSavedQR = (qr: SavedQR) => {
+    setActiveTab(qr.type);
+    
+    switch (qr.type) {
+      case 'text':
+        setTextInput(qr.content);
+        break;
+      case 'url':
+        setUrlInput(qr.content);
+        break;
+      case 'contact':
+        // Parse vCard
+        const nameMatch = qr.content.match(/FN:(.+)/);
+        const phoneMatch = qr.content.match(/TEL:(.+)/);
+        const emailMatch = qr.content.match(/EMAIL:(.+)/);
+        const orgMatch = qr.content.match(/ORG:(.+)/);
+        setContactData({
+          name: nameMatch ? nameMatch[1] : '',
+          phone: phoneMatch ? phoneMatch[1] : '',
+          email: emailMatch ? emailMatch[1] : '',
+          organization: orgMatch ? orgMatch[1] : '',
+        });
+        break;
+      case 'wifi':
+        const ssidMatch = qr.content.match(/S:([^;]+)/);
+        const passMatch = qr.content.match(/P:([^;]+)/);
+        const encMatch = qr.content.match(/T:([^;]+)/);
+        setWiFiData({
+          ssid: ssidMatch ? ssidMatch[1] : '',
+          password: passMatch ? passMatch[1] : '',
+          encryption: (encMatch ? encMatch[1] : 'WPA') as any,
+        });
+        break;
+    }
+    
+    setShowLibrary(false);
+  };
+
+  const SavedQRCard = ({ item }: { item: SavedQR }) => (
+    <View style={styles.qrCard}>
+      <View style={styles.qrCardHeader}>
+        <View>
+          <Text style={styles.qrLabel}>{item.label}</Text>
+          <Text style={styles.qrDate}>
+            {new Date(item.createdAt).toLocaleDateString()}
+          </Text>
+        </View>
+        <View style={styles.qrCardButtons}>
+          <TouchableOpacity
+            style={styles.loadBtn}
+            onPress={() => loadSavedQR(item)}
+          >
+            <Text style={styles.loadBtnText}>Load</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.deleteBtn}
+            onPress={() => deleteQR(item.id)}
+          >
+            <Text style={styles.deleteBtnText}>×</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+      <View style={styles.qrPreview}>
+        <QRCode value={item.content} size={80} />
+      </View>
+      <Text style={styles.qrType}>{item.type.toUpperCase()}</Text>
+    </View>
+  );
 
   return (
     <SafeAreaView style={styles.container}>
       <StatusBar style="dark" />
+
       <View style={styles.header}>
-        <Text style={styles.title}>QR Scanner Offline</Text>
-        <Text style={styles.count}>{completed}/{items.length}</Text>
+        <Text style={styles.title}>QR Generator</Text>
+        <TouchableOpacity
+          style={styles.libraryBtn}
+          onPress={() => setShowLibrary(true)}
+        >
+          <Text style={styles.libraryBtnText}>Library ({savedQRs.length})</Text>
+        </TouchableOpacity>
       </View>
-      <FlatList
-        data={items}
-        keyExtractor={i => i.id}
-        contentContainerStyle={styles.list}
-        ListEmptyComponent={<Text style={styles.empty}>No items yet</Text>}
-        renderItem={({ item }) => (
-          <TouchableOpacity
-            style={styles.item}
-            onPress={() => toggleItem(item.id)}
-            onLongPress={() => deleteItem(item.id)}
-          >
-            <View style={[styles.check, item.completed && styles.checkActive]}>
-              {item.completed && <Text style={styles.checkmark}>✓</Text>}
-            </View>
-            <Text style={[styles.itemText, item.completed && styles.itemDone]}>{item.text}</Text>
-          </TouchableOpacity>
+
+      <ScrollView>
+        {/* Type Tabs */}
+        <View style={styles.tabs}>
+          {(['text', 'url', 'contact', 'wifi'] as const).map(type => (
+            <TouchableOpacity
+              key={type}
+              style={[styles.tab, activeTab === type && styles.tabActive]}
+              onPress={() => setActiveTab(type)}
+            >
+              <Text style={[styles.tabText, activeTab === type && styles.tabTextActive]}>
+                {type.toUpperCase()}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+
+        {/* Text Input */}
+        {activeTab === 'text' && (
+          <View style={styles.section}>
+            <Text style={styles.label}>Enter Text</Text>
+            <TextInput
+              style={[styles.input, styles.textArea]}
+              value={textInput}
+              onChangeText={setTextInput}
+              placeholder="Type your text here..."
+              multiline
+              numberOfLines={4}
+              placeholderTextColor={colors.gray.medium}
+            />
+          </View>
         )}
-      />
-      <TouchableOpacity style={styles.fab} onPress={() => setShowModal(true)}>
-        <Text style={styles.fabText}>+</Text>
-      </TouchableOpacity>
-      <AdBanner />
-      <Modal visible={showModal} animationType="slide" transparent>
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Add New</Text>
+
+        {/* URL Input */}
+        {activeTab === 'url' && (
+          <View style={styles.section}>
+            <Text style={styles.label}>Enter URL</Text>
             <TextInput
               style={styles.input}
-              value={input}
-              onChangeText={setInput}
-              placeholder="Enter text..."
-              autoFocus
+              value={urlInput}
+              onChangeText={setUrlInput}
+              placeholder="https://example.com"
+              keyboardType="url"
+              autoCapitalize="none"
+              placeholderTextColor={colors.gray.medium}
             />
-            <View style={styles.buttons}>
-              <TouchableOpacity style={[styles.btn, styles.btnCancel]} onPress={() => setShowModal(false)}>
-                <Text style={styles.btnTextCancel}>Cancel</Text>
+          </View>
+        )}
+
+        {/* Contact Input */}
+        {activeTab === 'contact' && (
+          <View style={styles.section}>
+            <Text style={styles.label}>Contact Information</Text>
+            <TextInput
+              style={styles.input}
+              value={contactData.name}
+              onChangeText={name => setContactData({...contactData, name})}
+              placeholder="Full Name"
+              placeholderTextColor={colors.gray.medium}
+            />
+            <TextInput
+              style={styles.input}
+              value={contactData.phone}
+              onChangeText={phone => setContactData({...contactData, phone})}
+              placeholder="Phone Number"
+              keyboardType="phone-pad"
+              placeholderTextColor={colors.gray.medium}
+            />
+            <TextInput
+              style={styles.input}
+              value={contactData.email}
+              onChangeText={email => setContactData({...contactData, email})}
+              placeholder="Email Address"
+              keyboardType="email-address"
+              autoCapitalize="none"
+              placeholderTextColor={colors.gray.medium}
+            />
+            <TextInput
+              style={styles.input}
+              value={contactData.organization}
+              onChangeText={organization => setContactData({...contactData, organization})}
+              placeholder="Organization (optional)"
+              placeholderTextColor={colors.gray.medium}
+            />
+          </View>
+        )}
+
+        {/* WiFi Input */}
+        {activeTab === 'wifi' && (
+          <View style={styles.section}>
+            <Text style={styles.label}>WiFi Network</Text>
+            <TextInput
+              style={styles.input}
+              value={wifiData.ssid}
+              onChangeText={ssid => setWiFiData({...wifiData, ssid})}
+              placeholder="Network Name (SSID)"
+              placeholderTextColor={colors.gray.medium}
+            />
+            <TextInput
+              style={styles.input}
+              value={wifiData.password}
+              onChangeText={password => setWiFiData({...wifiData, password})}
+              placeholder="Password"
+              secureTextEntry
+              placeholderTextColor={colors.gray.medium}
+            />
+            <Text style={styles.sublabel}>Encryption Type</Text>
+            <View style={styles.encryptionRow}>
+              {(['WPA', 'WEP', 'nopass'] as const).map(enc => (
+                <TouchableOpacity
+                  key={enc}
+                  style={[
+                    styles.encryptionBtn,
+                    wifiData.encryption === enc && styles.encryptionBtnActive,
+                  ]}
+                  onPress={() => setWiFiData({...wifiData, encryption: enc})}
+                >
+                  <Text style={[
+                    styles.encryptionText,
+                    wifiData.encryption === enc && styles.encryptionTextActive,
+                  ]}>
+                    {enc === 'nopass' ? 'None' : enc}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          </View>
+        )}
+
+        {/* QR Code Display */}
+        {qrContent && (
+          <View style={styles.qrDisplay}>
+            <Text style={styles.qrDisplayTitle}>Generated QR Code</Text>
+            <View style={styles.qrBox}>
+              <QRCode
+                value={qrContent}
+                size={250}
+                backgroundColor={colors.white}
+                color={colors.black}
+                getRef={qrRef}
+              />
+            </View>
+
+            <View style={styles.actionButtons}>
+              <TouchableOpacity
+                style={styles.actionBtn}
+                onPress={() => {
+                  setCurrentQRContent(qrContent);
+                  setShowSaveModal(true);
+                }}
+              >
+                <Text style={styles.actionBtnText}>Save to Library</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={[styles.btn, styles.btnAdd]} onPress={addItem}>
-                <Text style={styles.btnText}>Add</Text>
+
+              <TouchableOpacity
+                style={[styles.actionBtn, styles.actionBtnSecondary]}
+                onPress={handleShare}
+              >
+                <Text style={styles.actionBtnTextSecondary}>Share Content</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        )}
+
+        <View style={{ height: 100 }} />
+      </ScrollView>
+
+      <AdBanner />
+
+      {/* Save Modal */}
+      <Modal visible={showSaveModal} animationType="fade" transparent>
+        <View style={styles.modalOverlay}>
+          <View style={styles.saveModal}>
+            <Text style={styles.saveModalTitle}>Save QR Code</Text>
+            <TextInput
+              style={styles.saveInput}
+              value={saveLabel}
+              onChangeText={setSaveLabel}
+              placeholder="Enter a label..."
+              placeholderTextColor={colors.gray.medium}
+            />
+            <View style={styles.saveButtons}>
+              <TouchableOpacity
+                style={[styles.saveBtn, styles.saveBtnCancel]}
+                onPress={() => {
+                  setShowSaveModal(false);
+                  setSaveLabel('');
+                }}
+              >
+                <Text style={styles.saveBtnTextCancel}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.saveBtn, styles.saveBtnSave]}
+                onPress={saveQR}
+              >
+                <Text style={styles.saveBtnText}>Save</Text>
               </TouchableOpacity>
             </View>
           </View>
         </View>
+      </Modal>
+
+      {/* Library Modal */}
+      <Modal visible={showLibrary} animationType="slide">
+        <SafeAreaView style={styles.modalContainer}>
+          <View style={styles.modalHeader}>
+            <Text style={styles.modalTitle}>QR Library</Text>
+            <TouchableOpacity onPress={() => setShowLibrary(false)}>
+              <Text style={styles.closeBtn}>Close</Text>
+            </TouchableOpacity>
+          </View>
+
+          {savedQRs.length === 0 ? (
+            <View style={styles.emptyState}>
+              <Text style={styles.emptyText}>No saved QR codes</Text>
+              <Text style={styles.emptySubtext}>
+                Generate and save QR codes for quick access
+              </Text>
+            </View>
+          ) : (
+            <FlatList
+              data={savedQRs}
+              keyExtractor={item => item.id}
+              numColumns={2}
+              renderItem={({ item }) => <SavedQRCard item={item} />}
+              contentContainerStyle={styles.libraryGrid}
+            />
+          )}
+        </SafeAreaView>
       </Modal>
     </SafeAreaView>
   );
@@ -127,27 +452,267 @@ export default function App() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.background },
-  header: { flexDirection: 'row', justifyContent: 'space-between', padding: spacing.lg, alignItems: 'center' },
-  title: { fontSize: 24, fontWeight: 'bold', color: colors.primary },
-  count: { fontSize: 16, color: colors.gray.dark },
-  list: { paddingHorizontal: spacing.lg, paddingBottom: 100 },
-  empty: { textAlign: 'center', marginTop: spacing.xl, color: colors.gray.medium, fontSize: 16 },
-  item: { backgroundColor: colors.white, borderRadius: 12, padding: spacing.lg, marginBottom: spacing.sm, flexDirection: 'row', alignItems: 'center' },
-  check: { width: 24, height: 24, borderRadius: 12, borderWidth: 2, borderColor: colors.gray.medium, marginRight: spacing.md, justifyContent: 'center', alignItems: 'center' },
-  checkActive: { backgroundColor: colors.status.success, borderColor: colors.status.success },
-  checkmark: { color: colors.white, fontSize: 14, fontWeight: 'bold' },
-  itemText: { flex: 1, fontSize: 16, color: colors.text },
-  itemDone: { textDecorationLine: 'line-through', color: colors.gray.medium },
-  fab: { position: 'absolute', right: spacing.lg, bottom: 80, width: 56, height: 56, borderRadius: 28, backgroundColor: colors.primary, justifyContent: 'center', alignItems: 'center', elevation: 8 },
-  fabText: { color: colors.white, fontSize: 32 },
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
-  modalContent: { backgroundColor: colors.white, borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: spacing.xl },
-  modalTitle: { fontSize: 20, fontWeight: 'bold', color: colors.primary, marginBottom: spacing.lg },
-  input: { backgroundColor: colors.gray.light, padding: spacing.md, borderRadius: 12, fontSize: 16, marginBottom: spacing.lg },
-  buttons: { flexDirection: 'row', gap: spacing.md },
-  btn: { flex: 1, padding: spacing.lg, borderRadius: 12, alignItems: 'center' },
-  btnCancel: { backgroundColor: colors.gray.light },
-  btnAdd: { backgroundColor: colors.primary },
-  btnText: { color: colors.white, fontSize: 16, fontWeight: 'bold' },
-  btnTextCancel: { color: colors.text, fontSize: 16, fontWeight: '600' },
+  header: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: spacing.lg,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.gray.light,
+  },
+  title: { fontSize: 28, fontWeight: 'bold', color: colors.primary },
+  libraryBtn: {
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    backgroundColor: colors.primary,
+    borderRadius: 8,
+  },
+  libraryBtnText: { fontSize: 14, color: colors.white, fontWeight: '600' },
+  tabs: {
+    flexDirection: 'row',
+    padding: spacing.md,
+    gap: spacing.sm,
+    backgroundColor: colors.white,
+  },
+  tab: {
+    flex: 1,
+    padding: spacing.md,
+    backgroundColor: colors.gray.light,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  tabActive: { backgroundColor: colors.primary },
+  tabText: { fontSize: 12, fontWeight: '600', color: colors.text },
+  tabTextActive: { color: colors.white },
+  section: {
+    padding: spacing.lg,
+    backgroundColor: colors.white,
+    marginTop: spacing.sm,
+  },
+  label: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: colors.text,
+    marginBottom: spacing.md,
+  },
+  sublabel: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: colors.text,
+    marginTop: spacing.md,
+    marginBottom: spacing.sm,
+  },
+  input: {
+    backgroundColor: colors.gray.light,
+    padding: spacing.md,
+    borderRadius: 12,
+    fontSize: 16,
+    color: colors.text,
+    marginBottom: spacing.md,
+  },
+  textArea: {
+    height: 120,
+    textAlignVertical: 'top',
+  },
+  encryptionRow: {
+    flexDirection: 'row',
+    gap: spacing.sm,
+  },
+  encryptionBtn: {
+    flex: 1,
+    padding: spacing.md,
+    backgroundColor: colors.gray.light,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  encryptionBtnActive: { backgroundColor: colors.primary },
+  encryptionText: { fontSize: 14, fontWeight: '600', color: colors.text },
+  encryptionTextActive: { color: colors.white },
+  qrDisplay: {
+    margin: spacing.lg,
+    padding: spacing.lg,
+    backgroundColor: colors.white,
+    borderRadius: 16,
+    alignItems: 'center',
+    elevation: 4,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 8,
+  },
+  qrDisplayTitle: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: colors.primary,
+    marginBottom: spacing.lg,
+  },
+  qrBox: {
+    padding: spacing.lg,
+    backgroundColor: colors.white,
+    borderRadius: 12,
+    marginBottom: spacing.lg,
+  },
+  actionButtons: {
+    width: '100%',
+    gap: spacing.md,
+  },
+  actionBtn: {
+    padding: spacing.md,
+    backgroundColor: colors.primary,
+    borderRadius: 12,
+    alignItems: 'center',
+  },
+  actionBtnSecondary: {
+    backgroundColor: colors.white,
+    borderWidth: 2,
+    borderColor: colors.primary,
+  },
+  actionBtnText: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: colors.white,
+  },
+  actionBtnTextSecondary: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: colors.primary,
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  saveModal: {
+    backgroundColor: colors.white,
+    borderRadius: 16,
+    padding: spacing.xl,
+    width: '85%',
+  },
+  saveModalTitle: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: colors.primary,
+    marginBottom: spacing.lg,
+  },
+  saveInput: {
+    backgroundColor: colors.gray.light,
+    padding: spacing.md,
+    borderRadius: 12,
+    fontSize: 16,
+    color: colors.text,
+    marginBottom: spacing.lg,
+  },
+  saveButtons: {
+    flexDirection: 'row',
+    gap: spacing.md,
+  },
+  saveBtn: {
+    flex: 1,
+    padding: spacing.md,
+    borderRadius: 12,
+    alignItems: 'center',
+  },
+  saveBtnCancel: { backgroundColor: colors.gray.light },
+  saveBtnSave: { backgroundColor: colors.primary },
+  saveBtnText: { fontSize: 16, fontWeight: 'bold', color: colors.white },
+  saveBtnTextCancel: { fontSize: 16, fontWeight: '600', color: colors.text },
+  modalContainer: {
+    flex: 1,
+    backgroundColor: colors.background,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: spacing.lg,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.gray.light,
+  },
+  modalTitle: { fontSize: 24, fontWeight: 'bold', color: colors.primary },
+  closeBtn: { fontSize: 16, color: colors.primary, fontWeight: '600' },
+  emptyState: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: spacing.xl,
+  },
+  emptyText: {
+    fontSize: 18,
+    color: colors.gray.dark,
+    marginBottom: spacing.sm,
+  },
+  emptySubtext: {
+    fontSize: 14,
+    color: colors.gray.medium,
+    textAlign: 'center',
+  },
+  libraryGrid: {
+    padding: spacing.md,
+  },
+  qrCard: {
+    flex: 1,
+    margin: spacing.sm,
+    padding: spacing.md,
+    backgroundColor: colors.white,
+    borderRadius: 12,
+    elevation: 2,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.1,
+    shadowRadius: 2,
+  },
+  qrCardHeader: {
+    marginBottom: spacing.md,
+  },
+  qrLabel: {
+    fontSize: 14,
+    fontWeight: 'bold',
+    color: colors.text,
+    marginBottom: spacing.xs,
+  },
+  qrDate: {
+    fontSize: 11,
+    color: colors.gray.dark,
+  },
+  qrCardButtons: {
+    flexDirection: 'row',
+    gap: spacing.xs,
+    marginTop: spacing.sm,
+  },
+  loadBtn: {
+    flex: 1,
+    padding: spacing.xs,
+    backgroundColor: colors.primary,
+    borderRadius: 6,
+    alignItems: 'center',
+  },
+  loadBtnText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: colors.white,
+  },
+  deleteBtn: {
+    width: 28,
+    height: 28,
+    backgroundColor: colors.status.error,
+    borderRadius: 14,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  deleteBtnText: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: colors.white,
+  },
+  qrPreview: {
+    alignItems: 'center',
+    marginVertical: spacing.md,
+  },
+  qrType: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: colors.gray.dark,
+    textAlign: 'center',
+  },
 });
