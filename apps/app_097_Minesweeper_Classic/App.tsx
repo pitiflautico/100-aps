@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { StyleSheet, Text, View, TouchableOpacity, SafeAreaView, FlatList, TextInput, Modal } from 'react-native';
+import React, { useState, useEffect, useRef } from 'react';
+import { StyleSheet, Text, View, TouchableOpacity, SafeAreaView, Dimensions, Alert } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { colors, spacing } from './theme';
@@ -7,147 +7,541 @@ import { AdBanner } from './components/AdBanner';
 import { initializeAds, showInterstitialAd } from './services/adsManager';
 
 const STORAGE_KEY = '@Minesweeper_Classic_data';
+const GRID_SIZE = 8;
+const MINE_COUNT = 10;
+const { width } = Dimensions.get('window');
+const CELL_SIZE = (width - spacing.lg * 2 - spacing.sm * 7) / GRID_SIZE;
 
-interface Item {
-  id: string;
-  text: string;
-  completed: boolean;
-  createdAt: string;
+interface Cell {
+  row: number;
+  col: number;
+  isMine: boolean;
+  isRevealed: boolean;
+  isFlagged: boolean;
+  adjacentMines: number;
+}
+
+interface GameStats {
+  bestTime: number;
+  gamesWon: number;
+  gamesPlayed: number;
 }
 
 export default function App() {
-  const [items, setItems] = useState<Item[]>([]);
-  const [input, setInput] = useState('');
-  const [showModal, setShowModal] = useState(false);
-  const [count, setCount] = useState(0);
+  const [grid, setGrid] = useState<Cell[][]>([]);
+  const [gameState, setGameState] = useState<'ready' | 'playing' | 'won' | 'lost'>('ready');
+  const [flagMode, setFlagMode] = useState(false);
+  const [minesLeft, setMinesLeft] = useState(MINE_COUNT);
+  const [time, setTime] = useState(0);
+  const [firstClick, setFirstClick] = useState(true);
+  const [stats, setStats] = useState<GameStats>({ bestTime: 0, gamesWon: 0, gamesPlayed: 0 });
+  const [adCounter, setAdCounter] = useState(0);
+  const timerRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
     initializeAds();
-    loadData();
+    loadStats();
+    initializeGrid();
   }, []);
 
-  const loadData = async () => {
+  useEffect(() => {
+    if (gameState === 'playing') {
+      timerRef.current = setInterval(() => {
+        setTime(prev => prev + 1);
+      }, 1000);
+    } else {
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
+    }
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+    };
+  }, [gameState]);
+
+  const loadStats = async () => {
     try {
       const saved = await AsyncStorage.getItem(STORAGE_KEY);
-      if (saved) setItems(JSON.parse(saved));
+      if (saved) setStats(JSON.parse(saved));
     } catch (error) {
       console.error('Load error:', error);
     }
   };
 
-  const saveData = async (data: Item[]) => {
+  const saveStats = async (newStats: GameStats) => {
     try {
-      await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-      setItems(data);
+      await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(newStats));
+      setStats(newStats);
     } catch (error) {
       console.error('Save error:', error);
     }
   };
 
-  const addItem = () => {
-    if (!input.trim()) return;
-    const newItem: Item = {
-      id: Date.now().toString(),
-      text: input,
-      completed: false,
-      createdAt: new Date().toISOString(),
-    };
-    saveData([newItem, ...items]);
-    setInput('');
-    setShowModal(false);
-    const newCount = count + 1;
-    setCount(newCount);
-    if (newCount % 5 === 0) showInterstitialAd();
+  const initializeGrid = (excludeRow?: number, excludeCol?: number) => {
+    const newGrid: Cell[][] = [];
+
+    // Create empty grid
+    for (let row = 0; row < GRID_SIZE; row++) {
+      newGrid[row] = [];
+      for (let col = 0; col < GRID_SIZE; col++) {
+        newGrid[row][col] = {
+          row,
+          col,
+          isMine: false,
+          isRevealed: false,
+          isFlagged: false,
+          adjacentMines: 0,
+        };
+      }
+    }
+
+    // Place mines (avoiding first click)
+    let minesPlaced = 0;
+    while (minesPlaced < MINE_COUNT) {
+      const row = Math.floor(Math.random() * GRID_SIZE);
+      const col = Math.floor(Math.random() * GRID_SIZE);
+
+      if (!newGrid[row][col].isMine && !(row === excludeRow && col === excludeCol)) {
+        newGrid[row][col].isMine = true;
+        minesPlaced++;
+      }
+    }
+
+    // Calculate adjacent mines
+    for (let row = 0; row < GRID_SIZE; row++) {
+      for (let col = 0; col < GRID_SIZE; col++) {
+        if (!newGrid[row][col].isMine) {
+          let count = 0;
+          for (let dr = -1; dr <= 1; dr++) {
+            for (let dc = -1; dc <= 1; dc++) {
+              const newRow = row + dr;
+              const newCol = col + dc;
+              if (
+                newRow >= 0 && newRow < GRID_SIZE &&
+                newCol >= 0 && newCol < GRID_SIZE &&
+                newGrid[newRow][newCol].isMine
+              ) {
+                count++;
+              }
+            }
+          }
+          newGrid[row][col].adjacentMines = count;
+        }
+      }
+    }
+
+    setGrid(newGrid);
   };
 
-  const toggleItem = (id: string) => {
-    saveData(items.map(i => i.id === id ? { ...i, completed: !i.completed } : i));
+  const revealCell = (row: number, col: number) => {
+    if (gameState === 'won' || gameState === 'lost') return;
+
+    const cell = grid[row][col];
+    if (cell.isRevealed || cell.isFlagged) return;
+
+    // First click - ensure safe start
+    if (firstClick) {
+      setFirstClick(false);
+      setGameState('playing');
+      initializeGrid(row, col);
+      // Will reveal on next render
+      setTimeout(() => revealCell(row, col), 50);
+      return;
+    }
+
+    if (cell.isMine) {
+      // Game over - reveal all mines
+      const newGrid = grid.map(row =>
+        row.map(cell => ({
+          ...cell,
+          isRevealed: cell.isMine ? true : cell.isRevealed
+        }))
+      );
+      setGrid(newGrid);
+      setGameState('lost');
+
+      const newStats = {
+        ...stats,
+        gamesPlayed: stats.gamesPlayed + 1,
+      };
+      saveStats(newStats);
+
+      Alert.alert('Game Over', 'You hit a mine!', [
+        { text: 'New Game', onPress: resetGame }
+      ]);
+      return;
+    }
+
+    // Reveal cell and flood fill if empty
+    const newGrid = [...grid];
+    const toReveal: [number, number][] = [[row, col]];
+    const visited = new Set<string>();
+
+    while (toReveal.length > 0) {
+      const [r, c] = toReveal.pop()!;
+      const key = `${r},${c}`;
+
+      if (visited.has(key)) continue;
+      visited.add(key);
+
+      if (r < 0 || r >= GRID_SIZE || c < 0 || c >= GRID_SIZE) continue;
+      if (newGrid[r][c].isRevealed || newGrid[r][c].isFlagged || newGrid[r][c].isMine) continue;
+
+      newGrid[r][c].isRevealed = true;
+
+      // If cell has no adjacent mines, reveal neighbors
+      if (newGrid[r][c].adjacentMines === 0) {
+        for (let dr = -1; dr <= 1; dr++) {
+          for (let dc = -1; dc <= 1; dc++) {
+            if (dr !== 0 || dc !== 0) {
+              toReveal.push([r + dr, c + dc]);
+            }
+          }
+        }
+      }
+    }
+
+    setGrid(newGrid);
+
+    // Check for win
+    const allNonMinesRevealed = newGrid.every(row =>
+      row.every(cell => cell.isMine || cell.isRevealed)
+    );
+
+    if (allNonMinesRevealed) {
+      setGameState('won');
+      const newStats = {
+        ...stats,
+        gamesPlayed: stats.gamesPlayed + 1,
+        gamesWon: stats.gamesWon + 1,
+        bestTime: stats.bestTime === 0 ? time : Math.min(stats.bestTime, time),
+      };
+      saveStats(newStats);
+
+      const count = adCounter + 1;
+      setAdCounter(count);
+      if (count % 3 === 0) showInterstitialAd();
+
+      Alert.alert('Congratulations!', `You won in ${time} seconds!`, [
+        { text: 'New Game', onPress: resetGame }
+      ]);
+    }
   };
 
-  const deleteItem = (id: string) => {
-    saveData(items.filter(i => i.id !== id));
+  const toggleFlag = (row: number, col: number) => {
+    if (gameState === 'won' || gameState === 'lost') return;
+
+    const cell = grid[row][col];
+    if (cell.isRevealed) return;
+
+    if (!firstClick && gameState === 'ready') {
+      setGameState('playing');
+    }
+
+    const newGrid = [...grid];
+    newGrid[row][col].isFlagged = !newGrid[row][col].isFlagged;
+    setGrid(newGrid);
+
+    setMinesLeft(prev => newGrid[row][col].isFlagged ? prev - 1 : prev + 1);
   };
 
-  const completed = items.filter(i => i.completed).length;
+  const handleCellPress = (row: number, col: number) => {
+    if (flagMode) {
+      toggleFlag(row, col);
+    } else {
+      revealCell(row, col);
+    }
+  };
+
+  const resetGame = () => {
+    initializeGrid();
+    setGameState('ready');
+    setFirstClick(true);
+    setMinesLeft(MINE_COUNT);
+    setTime(0);
+    setFlagMode(false);
+  };
+
+  const getCellColor = (cell: Cell): string => {
+    if (!cell.isRevealed) {
+      return colors.gray.medium;
+    }
+    if (cell.isMine) {
+      return '#ff4444';
+    }
+    return colors.white;
+  };
+
+  const getCellContent = (cell: Cell): string => {
+    if (cell.isFlagged) return '🚩';
+    if (!cell.isRevealed) return '';
+    if (cell.isMine) return '💣';
+    if (cell.adjacentMines === 0) return '';
+    return cell.adjacentMines.toString();
+  };
+
+  const getNumberColor = (num: number): string => {
+    const colors = ['', '#0000ff', '#008000', '#ff0000', '#000080', '#800000', '#008080', '#000000', '#808080'];
+    return colors[num] || '#000';
+  };
+
+  const formatTime = (seconds: number): string => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+  };
 
   return (
     <SafeAreaView style={styles.container}>
       <StatusBar style="dark" />
+
       <View style={styles.header}>
-        <Text style={styles.title}>Minesweeper Classic</Text>
-        <Text style={styles.count}>{completed}/{items.length}</Text>
-      </View>
-      <FlatList
-        data={items}
-        keyExtractor={i => i.id}
-        contentContainerStyle={styles.list}
-        ListEmptyComponent={<Text style={styles.empty}>No items yet</Text>}
-        renderItem={({ item }) => (
-          <TouchableOpacity
-            style={styles.item}
-            onPress={() => toggleItem(item.id)}
-            onLongPress={() => deleteItem(item.id)}
-          >
-            <View style={[styles.check, item.completed && styles.checkActive]}>
-              {item.completed && <Text style={styles.checkmark}>✓</Text>}
-            </View>
-            <Text style={[styles.itemText, item.completed && styles.itemDone]}>{item.text}</Text>
-          </TouchableOpacity>
-        )}
-      />
-      <TouchableOpacity style={styles.fab} onPress={() => setShowModal(true)}>
-        <Text style={styles.fabText}>+</Text>
-      </TouchableOpacity>
-      <AdBanner />
-      <Modal visible={showModal} animationType="slide" transparent>
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Add New</Text>
-            <TextInput
-              style={styles.input}
-              value={input}
-              onChangeText={setInput}
-              placeholder="Enter text..."
-              autoFocus
-            />
-            <View style={styles.buttons}>
-              <TouchableOpacity style={[styles.btn, styles.btnCancel]} onPress={() => setShowModal(false)}>
-                <Text style={styles.btnTextCancel}>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={[styles.btn, styles.btnAdd]} onPress={addItem}>
-                <Text style={styles.btnText}>Add</Text>
-              </TouchableOpacity>
-            </View>
+        <Text style={styles.title}>Minesweeper</Text>
+        <View style={styles.statsRow}>
+          <View style={styles.statBox}>
+            <Text style={styles.statLabel}>Mines</Text>
+            <Text style={styles.statValue}>{minesLeft}</Text>
+          </View>
+          <View style={styles.statBox}>
+            <Text style={styles.statLabel}>Time</Text>
+            <Text style={styles.statValue}>{formatTime(time)}</Text>
+          </View>
+          <View style={styles.statBox}>
+            <Text style={styles.statLabel}>Best</Text>
+            <Text style={styles.statValue}>
+              {stats.bestTime > 0 ? formatTime(stats.bestTime) : '--:--'}
+            </Text>
           </View>
         </View>
-      </Modal>
+      </View>
+
+      <View style={styles.controls}>
+        <TouchableOpacity
+          style={[styles.modeBtn, !flagMode && styles.modeBtnActive]}
+          onPress={() => setFlagMode(false)}
+        >
+          <Text style={[styles.modeBtnText, !flagMode && styles.modeBtnTextActive]}>
+            Reveal
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.modeBtn, flagMode && styles.modeBtnActive]}
+          onPress={() => setFlagMode(true)}
+        >
+          <Text style={[styles.modeBtnText, flagMode && styles.modeBtnTextActive]}>
+            🚩 Flag
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.resetBtn} onPress={resetGame}>
+          <Text style={styles.resetBtnText}>New Game</Text>
+        </TouchableOpacity>
+      </View>
+
+      <View style={styles.gameContainer}>
+        <View style={styles.grid}>
+          {grid.map((row, rowIndex) => (
+            <View key={rowIndex} style={styles.row}>
+              {row.map((cell, colIndex) => (
+                <TouchableOpacity
+                  key={`${rowIndex}-${colIndex}`}
+                  style={[
+                    styles.cell,
+                    {
+                      width: CELL_SIZE,
+                      height: CELL_SIZE,
+                      backgroundColor: getCellColor(cell),
+                    }
+                  ]}
+                  onPress={() => handleCellPress(rowIndex, colIndex)}
+                  activeOpacity={0.7}
+                >
+                  <Text
+                    style={[
+                      styles.cellText,
+                      { color: getNumberColor(cell.adjacentMines) }
+                    ]}
+                  >
+                    {getCellContent(cell)}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          ))}
+        </View>
+
+        {gameState !== 'ready' && gameState !== 'playing' && (
+          <View style={styles.overlay}>
+            <View style={styles.resultCard}>
+              <Text style={styles.resultTitle}>
+                {gameState === 'won' ? '🎉 You Won!' : '💥 Game Over'}
+              </Text>
+              <Text style={styles.resultTime}>
+                Time: {formatTime(time)}
+              </Text>
+              {gameState === 'won' && time === stats.bestTime && (
+                <Text style={styles.bestLabel}>New Best Time!</Text>
+              )}
+              <Text style={styles.resultStats}>
+                Won: {stats.gamesWon} / {stats.gamesPlayed} games
+              </Text>
+            </View>
+          </View>
+        )}
+      </View>
+
+      <View style={styles.info}>
+        <Text style={styles.infoText}>
+          {flagMode ? 'Tap to place/remove flags' : 'Tap to reveal cells'}
+        </Text>
+        <Text style={styles.infoText}>
+          Win Rate: {stats.gamesPlayed > 0
+            ? Math.round((stats.gamesWon / stats.gamesPlayed) * 100)
+            : 0}%
+        </Text>
+      </View>
+
+      <AdBanner />
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: colors.background },
-  header: { flexDirection: 'row', justifyContent: 'space-between', padding: spacing.lg, alignItems: 'center' },
-  title: { fontSize: 24, fontWeight: 'bold', color: colors.primary },
-  count: { fontSize: 16, color: colors.gray.dark },
-  list: { paddingHorizontal: spacing.lg, paddingBottom: 100 },
-  empty: { textAlign: 'center', marginTop: spacing.xl, color: colors.gray.medium, fontSize: 16 },
-  item: { backgroundColor: colors.white, borderRadius: 12, padding: spacing.lg, marginBottom: spacing.sm, flexDirection: 'row', alignItems: 'center' },
-  check: { width: 24, height: 24, borderRadius: 12, borderWidth: 2, borderColor: colors.gray.medium, marginRight: spacing.md, justifyContent: 'center', alignItems: 'center' },
-  checkActive: { backgroundColor: colors.status.success, borderColor: colors.status.success },
-  checkmark: { color: colors.white, fontSize: 14, fontWeight: 'bold' },
-  itemText: { flex: 1, fontSize: 16, color: colors.text },
-  itemDone: { textDecorationLine: 'line-through', color: colors.gray.medium },
-  fab: { position: 'absolute', right: spacing.lg, bottom: 80, width: 56, height: 56, borderRadius: 28, backgroundColor: colors.primary, justifyContent: 'center', alignItems: 'center', elevation: 8 },
-  fabText: { color: colors.white, fontSize: 32 },
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
-  modalContent: { backgroundColor: colors.white, borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: spacing.xl },
-  modalTitle: { fontSize: 20, fontWeight: 'bold', color: colors.primary, marginBottom: spacing.lg },
-  input: { backgroundColor: colors.gray.light, padding: spacing.md, borderRadius: 12, fontSize: 16, marginBottom: spacing.lg },
-  buttons: { flexDirection: 'row', gap: spacing.md },
-  btn: { flex: 1, padding: spacing.lg, borderRadius: 12, alignItems: 'center' },
-  btnCancel: { backgroundColor: colors.gray.light },
-  btnAdd: { backgroundColor: colors.primary },
-  btnText: { color: colors.white, fontSize: 16, fontWeight: 'bold' },
-  btnTextCancel: { color: colors.text, fontSize: 16, fontWeight: '600' },
+  container: {
+    flex: 1,
+    backgroundColor: colors.background,
+  },
+  header: {
+    padding: spacing.lg,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.gray.light,
+  },
+  title: {
+    fontSize: 28,
+    fontWeight: 'bold',
+    color: colors.primary,
+    textAlign: 'center',
+    marginBottom: spacing.md,
+  },
+  statsRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+  },
+  statBox: {
+    alignItems: 'center',
+  },
+  statLabel: {
+    fontSize: 12,
+    color: colors.gray.dark,
+    marginBottom: 4,
+  },
+  statValue: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: colors.text,
+  },
+  controls: {
+    flexDirection: 'row',
+    padding: spacing.md,
+    gap: spacing.sm,
+  },
+  modeBtn: {
+    flex: 1,
+    paddingVertical: spacing.md,
+    borderRadius: 8,
+    backgroundColor: colors.gray.light,
+    alignItems: 'center',
+  },
+  modeBtnActive: {
+    backgroundColor: colors.primary,
+  },
+  modeBtnText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: colors.gray.dark,
+  },
+  modeBtnTextActive: {
+    color: colors.white,
+  },
+  resetBtn: {
+    flex: 1,
+    paddingVertical: spacing.md,
+    borderRadius: 8,
+    backgroundColor: colors.status.info,
+    alignItems: 'center',
+  },
+  resetBtnText: {
+    fontSize: 14,
+    fontWeight: 'bold',
+    color: colors.white,
+  },
+  gameContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: spacing.lg,
+  },
+  grid: {
+    backgroundColor: colors.gray.dark,
+    padding: 1,
+    borderRadius: 4,
+  },
+  row: {
+    flexDirection: 'row',
+  },
+  cell: {
+    margin: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderRadius: 2,
+  },
+  cellText: {
+    fontSize: CELL_SIZE * 0.5,
+    fontWeight: 'bold',
+  },
+  overlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.7)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  resultCard: {
+    backgroundColor: colors.white,
+    borderRadius: 16,
+    padding: spacing.xl,
+    alignItems: 'center',
+    minWidth: 250,
+  },
+  resultTitle: {
+    fontSize: 28,
+    fontWeight: 'bold',
+    color: colors.primary,
+    marginBottom: spacing.md,
+  },
+  resultTime: {
+    fontSize: 20,
+    color: colors.text,
+    marginBottom: spacing.sm,
+  },
+  bestLabel: {
+    fontSize: 16,
+    color: colors.status.success,
+    fontWeight: 'bold',
+    marginBottom: spacing.sm,
+  },
+  resultStats: {
+    fontSize: 14,
+    color: colors.gray.dark,
+  },
+  info: {
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.md,
+    paddingBottom: spacing.sm,
+    alignItems: 'center',
+  },
+  infoText: {
+    fontSize: 13,
+    color: colors.gray.dark,
+    marginBottom: 4,
+  },
 });

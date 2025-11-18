@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { StyleSheet, Text, View, TouchableOpacity, SafeAreaView, FlatList, TextInput, Modal } from 'react-native';
+import React, { useState, useEffect, useRef } from 'react';
+import { StyleSheet, Text, View, TouchableOpacity, SafeAreaView, Animated, Dimensions } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { colors, spacing } from './theme';
@@ -7,147 +7,528 @@ import { AdBanner } from './components/AdBanner';
 import { initializeAds, showInterstitialAd } from './services/adsManager';
 
 const STORAGE_KEY = '@Memory_Match_Game_data';
+const GRID_SIZE = 4;
+const TOTAL_PAIRS = 8;
+const { width } = Dimensions.get('window');
+const CARD_SIZE = (width - spacing.lg * 2 - spacing.md * 3) / GRID_SIZE;
 
-interface Item {
-  id: string;
-  text: string;
-  completed: boolean;
-  createdAt: string;
+const CARD_EMOJIS = ['🎮', '🎯', '🎨', '🎭', '🎪', '🎸', '🎺', '🎹'];
+
+interface Card {
+  id: number;
+  emoji: string;
+  isFlipped: boolean;
+  isMatched: boolean;
+}
+
+interface GameStats {
+  bestScore: number;
+  bestTime: number;
+  gamesPlayed: number;
 }
 
 export default function App() {
-  const [items, setItems] = useState<Item[]>([]);
-  const [input, setInput] = useState('');
-  const [showModal, setShowModal] = useState(false);
-  const [count, setCount] = useState(0);
+  const [cards, setCards] = useState<Card[]>([]);
+  const [flippedCards, setFlippedCards] = useState<number[]>([]);
+  const [moves, setMoves] = useState(0);
+  const [matches, setMatches] = useState(0);
+  const [time, setTime] = useState(0);
+  const [gameState, setGameState] = useState<'ready' | 'playing' | 'won'>('ready');
+  const [stats, setStats] = useState<GameStats>({ bestScore: 0, bestTime: 0, gamesPlayed: 0 });
+  const [adCounter, setAdCounter] = useState(0);
+  const timerRef = useRef<NodeJS.Timeout | null>(null);
+  const flipAnimations = useRef<{ [key: number]: Animated.Value }>({});
 
   useEffect(() => {
     initializeAds();
-    loadData();
+    loadStats();
+    initializeGame();
   }, []);
 
-  const loadData = async () => {
+  useEffect(() => {
+    if (gameState === 'playing') {
+      timerRef.current = setInterval(() => {
+        setTime(prev => prev + 1);
+      }, 1000);
+    } else {
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
+    }
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+    };
+  }, [gameState]);
+
+  useEffect(() => {
+    if (flippedCards.length === 2) {
+      const [first, second] = flippedCards;
+      const firstCard = cards.find(c => c.id === first);
+      const secondCard = cards.find(c => c.id === second);
+
+      if (firstCard && secondCard) {
+        if (firstCard.emoji === secondCard.emoji) {
+          // Match found
+          setTimeout(() => {
+            setCards(prev =>
+              prev.map(c =>
+                c.id === first || c.id === second ? { ...c, isMatched: true } : c
+              )
+            );
+            setMatches(prev => prev + 1);
+            setFlippedCards([]);
+          }, 600);
+        } else {
+          // No match - flip back
+          setTimeout(() => {
+            setCards(prev =>
+              prev.map(c =>
+                c.id === first || c.id === second ? { ...c, isFlipped: false } : c
+              )
+            );
+            setFlippedCards([]);
+          }, 1000);
+        }
+      }
+    }
+  }, [flippedCards, cards]);
+
+  useEffect(() => {
+    if (matches === TOTAL_PAIRS && gameState === 'playing') {
+      setGameState('won');
+
+      const newStats = {
+        ...stats,
+        gamesPlayed: stats.gamesPlayed + 1,
+        bestScore: stats.bestScore === 0 ? moves : Math.min(stats.bestScore, moves),
+        bestTime: stats.bestTime === 0 ? time : Math.min(stats.bestTime, time),
+      };
+      saveStats(newStats);
+
+      const count = adCounter + 1;
+      setAdCounter(count);
+      if (count % 3 === 0) {
+        setTimeout(() => showInterstitialAd(), 1000);
+      }
+    }
+  }, [matches, gameState]);
+
+  const loadStats = async () => {
     try {
       const saved = await AsyncStorage.getItem(STORAGE_KEY);
-      if (saved) setItems(JSON.parse(saved));
+      if (saved) setStats(JSON.parse(saved));
     } catch (error) {
       console.error('Load error:', error);
     }
   };
 
-  const saveData = async (data: Item[]) => {
+  const saveStats = async (newStats: GameStats) => {
     try {
-      await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-      setItems(data);
+      await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(newStats));
+      setStats(newStats);
     } catch (error) {
       console.error('Save error:', error);
     }
   };
 
-  const addItem = () => {
-    if (!input.trim()) return;
-    const newItem: Item = {
-      id: Date.now().toString(),
-      text: input,
-      completed: false,
-      createdAt: new Date().toISOString(),
-    };
-    saveData([newItem, ...items]);
-    setInput('');
-    setShowModal(false);
-    const newCount = count + 1;
-    setCount(newCount);
-    if (newCount % 5 === 0) showInterstitialAd();
+  const initializeGame = () => {
+    // Create pairs
+    const cardPairs: Card[] = [];
+    CARD_EMOJIS.forEach((emoji, index) => {
+      cardPairs.push(
+        {
+          id: index * 2,
+          emoji,
+          isFlipped: false,
+          isMatched: false,
+        },
+        {
+          id: index * 2 + 1,
+          emoji,
+          isFlipped: false,
+          isMatched: false,
+        }
+      );
+    });
+
+    // Shuffle
+    const shuffled = cardPairs.sort(() => Math.random() - 0.5);
+    setCards(shuffled);
+
+    // Reset animations
+    flipAnimations.current = {};
+    shuffled.forEach(card => {
+      flipAnimations.current[card.id] = new Animated.Value(0);
+    });
+
+    setFlippedCards([]);
+    setMoves(0);
+    setMatches(0);
+    setTime(0);
+    setGameState('ready');
   };
 
-  const toggleItem = (id: string) => {
-    saveData(items.map(i => i.id === id ? { ...i, completed: !i.completed } : i));
+  const handleCardPress = (cardId: number) => {
+    if (gameState === 'won') return;
+    if (flippedCards.length === 2) return;
+
+    const card = cards.find(c => c.id === cardId);
+    if (!card || card.isFlipped || card.isMatched) return;
+
+    if (gameState === 'ready') {
+      setGameState('playing');
+    }
+
+    // Animate flip
+    Animated.spring(flipAnimations.current[cardId], {
+      toValue: 1,
+      useNativeDriver: true,
+      friction: 8,
+      tension: 100,
+    }).start();
+
+    setCards(prev =>
+      prev.map(c => (c.id === cardId ? { ...c, isFlipped: true } : c))
+    );
+
+    setFlippedCards(prev => [...prev, cardId]);
+
+    if (flippedCards.length === 1) {
+      setMoves(m => m + 1);
+    }
   };
 
-  const deleteItem = (id: string) => {
-    saveData(items.filter(i => i.id !== id));
+  const resetGame = () => {
+    // Animate all cards back
+    Object.values(flipAnimations.current).forEach(anim => {
+      Animated.timing(anim, {
+        toValue: 0,
+        duration: 300,
+        useNativeDriver: true,
+      }).start();
+    });
+
+    setTimeout(() => {
+      initializeGame();
+    }, 300);
   };
 
-  const completed = items.filter(i => i.completed).length;
+  const getCardRotation = (cardId: number) => {
+    const animation = flipAnimations.current[cardId];
+    if (!animation) return '0deg';
+
+    return animation.interpolate({
+      inputRange: [0, 1],
+      outputRange: ['0deg', '180deg'],
+    });
+  };
+
+  const formatTime = (seconds: number): string => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+  };
 
   return (
     <SafeAreaView style={styles.container}>
       <StatusBar style="dark" />
+
       <View style={styles.header}>
-        <Text style={styles.title}>Memory Match Game</Text>
-        <Text style={styles.count}>{completed}/{items.length}</Text>
+        <Text style={styles.title}>Memory Match</Text>
+        <View style={styles.statsRow}>
+          <View style={styles.statBox}>
+            <Text style={styles.statLabel}>Moves</Text>
+            <Text style={styles.statValue}>{moves}</Text>
+          </View>
+          <View style={styles.statBox}>
+            <Text style={styles.statLabel}>Matches</Text>
+            <Text style={styles.statValue}>{matches}/{TOTAL_PAIRS}</Text>
+          </View>
+          <View style={styles.statBox}>
+            <Text style={styles.statLabel}>Time</Text>
+            <Text style={styles.statValue}>{formatTime(time)}</Text>
+          </View>
+        </View>
       </View>
-      <FlatList
-        data={items}
-        keyExtractor={i => i.id}
-        contentContainerStyle={styles.list}
-        ListEmptyComponent={<Text style={styles.empty}>No items yet</Text>}
-        renderItem={({ item }) => (
-          <TouchableOpacity
-            style={styles.item}
-            onPress={() => toggleItem(item.id)}
-            onLongPress={() => deleteItem(item.id)}
-          >
-            <View style={[styles.check, item.completed && styles.checkActive]}>
-              {item.completed && <Text style={styles.checkmark}>✓</Text>}
-            </View>
-            <Text style={[styles.itemText, item.completed && styles.itemDone]}>{item.text}</Text>
-          </TouchableOpacity>
-        )}
-      />
-      <TouchableOpacity style={styles.fab} onPress={() => setShowModal(true)}>
-        <Text style={styles.fabText}>+</Text>
-      </TouchableOpacity>
-      <AdBanner />
-      <Modal visible={showModal} animationType="slide" transparent>
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Add New</Text>
-            <TextInput
-              style={styles.input}
-              value={input}
-              onChangeText={setInput}
-              placeholder="Enter text..."
-              autoFocus
-            />
-            <View style={styles.buttons}>
-              <TouchableOpacity style={[styles.btn, styles.btnCancel]} onPress={() => setShowModal(false)}>
-                <Text style={styles.btnTextCancel}>Cancel</Text>
+
+      <View style={styles.gameContainer}>
+        <View style={styles.grid}>
+          {cards.map((card, index) => {
+            const row = Math.floor(index / GRID_SIZE);
+            const col = index % GRID_SIZE;
+
+            return (
+              <TouchableOpacity
+                key={card.id}
+                style={[
+                  styles.cardContainer,
+                  {
+                    width: CARD_SIZE,
+                    height: CARD_SIZE,
+                  }
+                ]}
+                onPress={() => handleCardPress(card.id)}
+                activeOpacity={0.8}
+              >
+                <Animated.View
+                  style={[
+                    styles.card,
+                    {
+                      transform: [
+                        { rotateY: getCardRotation(card.id) }
+                      ],
+                    }
+                  ]}
+                >
+                  <View style={styles.cardFront}>
+                    <Text style={styles.cardQuestion}>?</Text>
+                  </View>
+                </Animated.View>
+
+                <Animated.View
+                  style={[
+                    styles.card,
+                    styles.cardBack,
+                    {
+                      transform: [
+                        { rotateY: getCardRotation(card.id) }
+                      ],
+                    }
+                  ]}
+                >
+                  <Text style={styles.cardEmoji}>{card.emoji}</Text>
+                </Animated.View>
+
+                {card.isMatched && (
+                  <View style={styles.matchOverlay}>
+                    <Text style={styles.checkmark}>✓</Text>
+                  </View>
+                )}
               </TouchableOpacity>
-              <TouchableOpacity style={[styles.btn, styles.btnAdd]} onPress={addItem}>
-                <Text style={styles.btnText}>Add</Text>
+            );
+          })}
+        </View>
+
+        {gameState === 'won' && (
+          <View style={styles.winOverlay}>
+            <View style={styles.winCard}>
+              <Text style={styles.winTitle}>🎉 You Won!</Text>
+              <Text style={styles.winStat}>Moves: {moves}</Text>
+              <Text style={styles.winStat}>Time: {formatTime(time)}</Text>
+              {moves === stats.bestScore && (
+                <Text style={styles.bestLabel}>New Best Score!</Text>
+              )}
+              <TouchableOpacity style={styles.newGameBtn} onPress={resetGame}>
+                <Text style={styles.newGameBtnText}>New Game</Text>
               </TouchableOpacity>
             </View>
           </View>
+        )}
+      </View>
+
+      <View style={styles.footer}>
+        <View style={styles.bestScores}>
+          <View style={styles.bestItem}>
+            <Text style={styles.bestLabel}>Best Moves</Text>
+            <Text style={styles.bestValue}>
+              {stats.bestScore > 0 ? stats.bestScore : '--'}
+            </Text>
+          </View>
+          <View style={styles.bestItem}>
+            <Text style={styles.bestLabel}>Best Time</Text>
+            <Text style={styles.bestValue}>
+              {stats.bestTime > 0 ? formatTime(stats.bestTime) : '--:--'}
+            </Text>
+          </View>
+          <View style={styles.bestItem}>
+            <Text style={styles.bestLabel}>Games</Text>
+            <Text style={styles.bestValue}>{stats.gamesPlayed}</Text>
+          </View>
         </View>
-      </Modal>
+
+        <TouchableOpacity style={styles.resetBtn} onPress={resetGame}>
+          <Text style={styles.resetBtnText}>New Game</Text>
+        </TouchableOpacity>
+      </View>
+
+      <AdBanner />
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: colors.background },
-  header: { flexDirection: 'row', justifyContent: 'space-between', padding: spacing.lg, alignItems: 'center' },
-  title: { fontSize: 24, fontWeight: 'bold', color: colors.primary },
-  count: { fontSize: 16, color: colors.gray.dark },
-  list: { paddingHorizontal: spacing.lg, paddingBottom: 100 },
-  empty: { textAlign: 'center', marginTop: spacing.xl, color: colors.gray.medium, fontSize: 16 },
-  item: { backgroundColor: colors.white, borderRadius: 12, padding: spacing.lg, marginBottom: spacing.sm, flexDirection: 'row', alignItems: 'center' },
-  check: { width: 24, height: 24, borderRadius: 12, borderWidth: 2, borderColor: colors.gray.medium, marginRight: spacing.md, justifyContent: 'center', alignItems: 'center' },
-  checkActive: { backgroundColor: colors.status.success, borderColor: colors.status.success },
-  checkmark: { color: colors.white, fontSize: 14, fontWeight: 'bold' },
-  itemText: { flex: 1, fontSize: 16, color: colors.text },
-  itemDone: { textDecorationLine: 'line-through', color: colors.gray.medium },
-  fab: { position: 'absolute', right: spacing.lg, bottom: 80, width: 56, height: 56, borderRadius: 28, backgroundColor: colors.primary, justifyContent: 'center', alignItems: 'center', elevation: 8 },
-  fabText: { color: colors.white, fontSize: 32 },
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
-  modalContent: { backgroundColor: colors.white, borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: spacing.xl },
-  modalTitle: { fontSize: 20, fontWeight: 'bold', color: colors.primary, marginBottom: spacing.lg },
-  input: { backgroundColor: colors.gray.light, padding: spacing.md, borderRadius: 12, fontSize: 16, marginBottom: spacing.lg },
-  buttons: { flexDirection: 'row', gap: spacing.md },
-  btn: { flex: 1, padding: spacing.lg, borderRadius: 12, alignItems: 'center' },
-  btnCancel: { backgroundColor: colors.gray.light },
-  btnAdd: { backgroundColor: colors.primary },
-  btnText: { color: colors.white, fontSize: 16, fontWeight: 'bold' },
-  btnTextCancel: { color: colors.text, fontSize: 16, fontWeight: '600' },
+  container: {
+    flex: 1,
+    backgroundColor: colors.background,
+  },
+  header: {
+    padding: spacing.lg,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.gray.light,
+  },
+  title: {
+    fontSize: 28,
+    fontWeight: 'bold',
+    color: colors.primary,
+    textAlign: 'center',
+    marginBottom: spacing.md,
+  },
+  statsRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+  },
+  statBox: {
+    alignItems: 'center',
+  },
+  statLabel: {
+    fontSize: 12,
+    color: colors.gray.dark,
+    marginBottom: 4,
+  },
+  statValue: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: colors.text,
+  },
+  gameContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: spacing.lg,
+  },
+  grid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.md,
+    justifyContent: 'center',
+  },
+  cardContainer: {
+    position: 'relative',
+  },
+  card: {
+    position: 'absolute',
+    width: '100%',
+    height: '100%',
+    backgroundColor: colors.primary,
+    borderRadius: 12,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backfaceVisibility: 'hidden',
+    elevation: 4,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 4,
+  },
+  cardFront: {
+    width: '100%',
+    height: '100%',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  cardQuestion: {
+    fontSize: CARD_SIZE * 0.5,
+    color: colors.white,
+    fontWeight: 'bold',
+  },
+  cardBack: {
+    backgroundColor: colors.white,
+    transform: [{ rotateY: '180deg' }],
+  },
+  cardEmoji: {
+    fontSize: CARD_SIZE * 0.5,
+  },
+  matchOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(76, 175, 80, 0.9)',
+    borderRadius: 12,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  checkmark: {
+    fontSize: CARD_SIZE * 0.4,
+    color: colors.white,
+    fontWeight: 'bold',
+  },
+  winOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0,0,0,0.7)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  winCard: {
+    backgroundColor: colors.white,
+    borderRadius: 20,
+    padding: spacing.xl,
+    alignItems: 'center',
+    minWidth: 280,
+  },
+  winTitle: {
+    fontSize: 32,
+    fontWeight: 'bold',
+    color: colors.primary,
+    marginBottom: spacing.lg,
+  },
+  winStat: {
+    fontSize: 18,
+    color: colors.text,
+    marginBottom: spacing.sm,
+  },
+  bestLabel: {
+    fontSize: 14,
+    color: colors.status.success,
+    fontWeight: 'bold',
+    marginTop: spacing.sm,
+    marginBottom: spacing.md,
+  },
+  newGameBtn: {
+    backgroundColor: colors.primary,
+    paddingHorizontal: spacing.xl,
+    paddingVertical: spacing.md,
+    borderRadius: 12,
+    marginTop: spacing.md,
+  },
+  newGameBtnText: {
+    color: colors.white,
+    fontSize: 16,
+    fontWeight: 'bold',
+  },
+  footer: {
+    padding: spacing.lg,
+    borderTopWidth: 1,
+    borderTopColor: colors.gray.light,
+  },
+  bestScores: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    marginBottom: spacing.md,
+  },
+  bestItem: {
+    alignItems: 'center',
+  },
+  bestValue: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: colors.primary,
+  },
+  resetBtn: {
+    backgroundColor: colors.status.info,
+    paddingVertical: spacing.md,
+    borderRadius: 12,
+    alignItems: 'center',
+  },
+  resetBtnText: {
+    color: colors.white,
+    fontSize: 16,
+    fontWeight: 'bold',
+  },
 });

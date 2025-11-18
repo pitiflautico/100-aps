@@ -54,3 +54,13 @@ const adsManagerInstance = new AdsManagerClass();
 
 // Export the class for static method access
 export const AdsManager = AdsManagerClass;
+
+// Export helper functions for convenience
+export const initializeAds = () => {
+  // Ads are initialized in constructor
+  return adsManagerInstance;
+};
+
+export const showInterstitialAd = () => {
+  return AdsManagerClass.showInterstitialAd();
+};
